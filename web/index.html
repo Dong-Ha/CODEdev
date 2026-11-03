@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f5f7fb" />
+  <meta name="description" content="AX Code-Dev Agent local-first change-review console" />
+  <title>AX Studio — Code-Dev Agent</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-logo"><span class="brand-angle">⌁</span></span>
+        <div><div class="brand-name">AX Studio</div><div class="brand-sub">AGENT WORKSPACE</div></div>
+        <span class="brand-version">v0.2</span>
+      </div>
+
+      <div class="nav-section-label">WORKSPACE</div>
+      <div class="nav-list">
+        <div class="nav-item muted"><span class="nav-icon">◫</span> Overview <span class="nav-item-note">준비 중</span></div>
+        <button type="button" class="nav-item active" id="navCodeDev" data-page="code"><span class="nav-icon">⌘</span> Code-Dev <span class="active-dot"></span></button>
+        <button type="button" class="nav-item" id="navEnvironment" data-page="settings"><span class="nav-icon">⚙</span> 개발 환경 <span class="nav-item-note" id="navConfigStatus">설정 필요</span></button>
+        <div class="nav-item muted"><span class="nav-icon">▤</span> Reports <span class="nav-item-note">준비 중</span></div>
+      </div>
+
+      <div class="nav-section-label pipeline-title">AGENT PIPELINE</div>
+      <div class="pipeline-list">
+        <div class="pipeline-node"><span class="node-marker">01</span><div><div class="node-title">Spec-Gen</div><div class="node-description">요구사항 · 명세</div></div><span class="node-label">연동 예정</span></div>
+        <div class="pipeline-node"><span class="node-marker">02</span><div><div class="node-title">SW Design</div><div class="node-description">설계 · 리뷰</div></div><span class="node-label">수동 입력</span></div>
+        <div class="pipeline-node current"><span class="node-marker current">03</span><div><div class="node-title">Code-Dev</div><div class="node-description">코드 생성 · 변경 검토</div></div><span class="node-live">ACTIVE</span></div>
+        <div class="pipeline-node"><span class="node-marker">04</span><div><div class="node-title">TC Agent</div><div class="node-description">단위 테스트 작성</div></div></div>
+        <div class="pipeline-node"><span class="node-marker">05</span><div><div class="node-title">Arch Runner</div><div class="node-description">SAM · TEM · 정적분석</div></div></div>
+        <div class="pipeline-node"><span class="node-marker">06</span><div><div class="node-title">SQE / Report</div><div class="node-description">검증 · 결과 기록</div></div></div>
+      </div>
+
+      <div class="sidebar-spacer"></div>
+      <div class="secure-panel">
+        <div class="secure-title"><span class="secure-icon">✧</span> LOCAL-FIRST</div>
+        <p>외부 텔레메트리 없음<br />실행 명령 자동 호출 없음<br />승인 전 파일 쓰기 금지</p>
+        <div class="secure-foot"><span class="green-pulse"></span> <span id="serverSideStatus">서버 연결 중</span></div>
+      </div>
+      <div class="sidebar-footer">AX CODE-DEV · PREVIEW BUILD</div>
+    </aside>
+
+    <div class="shell-main">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>AX Workflow</span><span class="chevron">/</span><span>SW Development</span><span class="chevron">/</span><strong id="currentPageName">Code-Dev Agent</strong></div>
+        <div class="header-actions"><span class="top-badge"><span class="top-badge-dot"></span> LOCAL ENVIRONMENT</span><span class="header-divider"></span><div class="user-avatar">AX</div></div>
+      </header>
+
+      <main class="content">
+        <div id="codeDevView" class="page-view">
+        <section class="hero">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-dash"></span> AI-ASSISTED DEVELOPMENT</div>
+            <h1>Code-Dev <span>Agent</span></h1>
+            <p>요구사항을 코드 변경안으로 만들고, Diff를 검토한 뒤 승인하세요.</p>
+          </div>
+          <div class="hero-mark" aria-hidden="true"><span class="hero-code">&lt;/&gt;</span><span class="hero-ring"></span></div>
+        </section>
+
+        <section class="stepper" aria-label="작업 단계">
+          <div class="step active" id="step1"><div class="step-circle">1</div><div><strong>작업 정의</strong><small>요구사항 · 대상 파일</small></div></div>
+          <div class="step-line"></div>
+          <div class="step" id="step2"><div class="step-circle">2</div><div><strong>변경안 생성</strong><small>Local AI / Demo</small></div></div>
+          <div class="step-line"></div>
+          <div class="step" id="step3"><div class="step-circle">3</div><div><strong>Diff 검토</strong><small>변경 영향 확인</small></div></div>
+          <div class="step-line"></div>
+          <div class="step" id="step4"><div class="step-circle">4</div><div><strong>승인 · 반영</strong><small>수동 승인 Gate</small></div></div>
+        </section>
+
+        <section class="workspace-strip panel">
+          <div class="workspace-icon">⌑</div>
+          <div class="workspace-main">
+            <div class="workspace-heading">CURRENT WORKSPACE <span id="workspacePill" class="status-chip">연결 전</span> <button type="button" class="text-link workspace-edit" id="envEditShortcut">⚙ 설정 수정</button></div>
+            <div class="workspace-input-row">
+              <input type="text" id="workspaceInput" placeholder="/home/user/repos/linux-kernel" spellcheck="false" aria-label="워크스페이스 디렉터리 경로" />
+              <button type="button" class="btn btn-outline btn-sm" id="connectWorkspace">연결</button>
+            </div>
+          </div>
+          <div class="workspace-divider"></div>
+          <div class="workspace-meta"><div class="workspace-heading">GIT BRANCH</div><div class="workspace-meta-value"><span class="branch-symbol">⑂</span> <span id="branchValue">—</span></div></div>
+          <div class="workspace-meta"><div class="workspace-heading">EDITABLE FILES</div><div class="workspace-meta-value"><span id="fileCount">0</span> <span class="muted-small">files</span></div></div>
+        </section>
+
+        <section class="active-env-strip panel" aria-label="현재 코드 개발 환경 설정">
+          <div class="active-env-main"><div class="active-env-kicker">ACTIVE DEVELOPMENT PROFILE <span class="active-env-ready" id="activeEnvBadge">SETUP REQUIRED</span></div><div class="active-env-command" id="activeBuildCommand">개발 환경 설정을 먼저 저장하세요.</div><div class="active-env-details"><span>EDIT SCOPE</span><code id="activeEditablePaths">—</code><span class="active-env-note-label">CHANGE TARGET</span><span id="activeChangeNotes">—</span></div></div>
+          <button class="btn btn-outline btn-sm" type="button" id="activeEnvEdit">환경 설정</button>
+        </section>
+
+        <div class="work-grid">
+          <section class="panel task-panel">
+            <div class="panel-heading"><div class="heading-title"><span class="panel-glyph purple">✎</span><div><h2>작업 요청</h2><p>Task configuration</p></div></div><span class="small-index">01 / INPUT</span></div>
+            <div class="panel-content">
+              <label for="taskPrompt" class="field-label">DEVELOPMENT INSTRUCTION</label>
+              <textarea id="taskPrompt" rows="7" placeholder="예: 충전 전류 설정 함수에서 음수 및 범위 초과 입력을 차단하고 기존 정상 동작은 유지해줘."></textarea>
+              <div class="hint-row"><span><span class="sparkle">✧</span> 구체적인 변경 조건을 입력하세요</span><button class="text-link" type="button" id="fillDemoPrompt">예시 불러오기</button></div>
+
+              <div class="divider-soft"></div>
+              <label for="targetFile" class="field-label">TARGET FILE <span class="field-required">*</span></label>
+              <div class="select-wrapper"><select id="targetFile"><option value="">워크스페이스를 먼저 연결하세요</option></select><span class="select-arrow">⌄</span></div>
+              <div class="field-caption">MVP는 한 번에 파일 1개만 변경합니다.</div>
+
+              <div class="divider-soft"></div>
+              <div class="field-label">GENERATION ENGINE</div>
+              <div class="engine-toggle" role="group" aria-label="코드 생성 엔진 선택">
+                <button class="engine-option selected" type="button" data-engine="demo" aria-pressed="true"><span class="engine-sym">▣</span><strong>Demo</strong><small>내장 시뮬레이션</small></button>
+                <button class="engine-option" type="button" data-engine="ollama" aria-pressed="false"><span class="engine-sym">◈</span><strong>Ollama</strong><small>로컬 LLM</small></button>
+              </div>
+              <div id="ollamaConfig" class="ollama-config hidden">
+                <div class="model-row"><label class="field-label" for="modelSelect">LOCAL MODEL</label><button type="button" class="text-link" id="refreshModels">모델 새로고침</button></div>
+                <div class="select-wrapper"><select id="modelSelect"><option value="">모델을 불러오는 중...</option></select><span class="select-arrow">⌄</span></div>
+                <div id="ollamaStatus" class="field-caption">로컬 Ollama 연결 상태 확인</div>
+              </div>
+
+              <div class="guardrails"><div class="guardrails-title"><span>♢</span> SAFETY GUARDRAILS</div><div class="guardrail-row"><span>✓</span> 선택한 파일만 변경</div><div class="guardrail-row"><span>✓</span> 적용 전 수동 승인 필수</div><div class="guardrail-row"><span>✓</span> 빌드 / 플래싱 / 명령 실행 제외</div></div>
+              <button class="btn btn-primary btn-generate" type="button" id="generateBtn"><span class="btn-sparkle">✦</span><span id="generateText">변경안 생성하기</span><span class="btn-arrow">→</span></button>
+              <div class="submit-note" id="submitNote">코드 파일은 승인 전까지 수정되지 않습니다.</div>
+            </div>
+          </section>
+
+          <section class="panel diff-panel">
+            <div class="panel-heading"><div class="heading-title"><span class="panel-glyph blue">≠</span><div><h2>코드 변경 미리보기</h2><p>Diff &amp; change inspection</p></div></div><div class="diff-header-stats" id="diffStats"><span class="empty-stat">No changes</span></div></div>
+            <div class="diff-toolbar"><div class="tab-list" role="tablist" aria-label="코드 보기 방식"><button class="tab-button active" data-tab="diff" role="tab" aria-selected="true">Unified Diff</button><button class="tab-button" data-tab="original" role="tab" aria-selected="false">Original</button><button class="tab-button" data-tab="revised" role="tab" aria-selected="false">Revised</button></div><span id="fileStatus" class="file-status"><span class="status-idle-dot"></span> AWAITING TASK</span></div>
+            <div class="file-path-bar"><span class="file-tree-icon">▥</span><span id="filePathLabel">No file selected</span><span class="file-path-lang" id="fileLang">—</span></div>
+            <div class="diff-body" id="diffBody"><div class="empty-diff"><div class="empty-diff-icon"><span>{ }</span></div><h3>새로운 변경을 시작하세요</h3><p>왼쪽에서 요청과 대상 파일을 선택하면<br />에이전트의 변경안을 여기에서 비교할 수 있습니다.</p><span class="empty-caption">BEFORE APPLYING TO YOUR REPOSITORY</span></div></div>
+            <div class="diff-footer"><div class="diff-footer-left"><span class="review-dot"></span><span id="diffFooterMessage">변경 사항을 기다리는 중</span></div><span class="diff-footer-right">READ-ONLY PREVIEW</span></div>
+          </section>
+
+          <aside class="review-column">
+            <section class="panel review-panel"><div class="panel-heading"><div class="heading-title"><span class="panel-glyph amber">◇</span><div><h2>Review Gate</h2><p>Human-in-the-loop approval</p></div></div></div>
+              <div class="review-inner"><div class="review-status" id="reviewStatus"><div class="review-status-icon">⋯</div><strong>승인 대기 없음</strong><p>변경안이 생성되면<br />여기에 검토 항목이 표시됩니다.</p></div>
+                <div id="reviewContent" class="review-content hidden"><div class="review-detail-label">CHANGE SUMMARY</div><h3 id="proposalSummary">—</h3><p id="proposalRationale" class="proposal-rationale"></p><div class="risk-line"><span>예상 위험도</span><span class="risk-chip" id="proposalRisk">검토 필요</span></div><div class="review-detail-label" style="margin-top:18px">REVIEW CHECKLIST</div><div id="reviewChecklist" class="review-checklist"></div><div class="review-detail-label" style="margin-top:18px">SUGGESTED VALIDATION · NOT RUN</div><div id="reviewGuidance" class="review-guidance"></div></div>
+                <div class="approval-actions"><button type="button" id="applyBtn" class="btn btn-accept" disabled><span>✓</span> 승인 후 파일 반영</button><div class="approval-secondary"><button type="button" id="rejectBtn" class="btn btn-neutral" disabled>제안 반려</button><button type="button" id="undoBtn" class="btn btn-neutral" disabled>반영 되돌리기</button></div></div>
+                <div class="review-safety"><span>⚿</span><span>승인 시에만 워크스페이스 파일에 기록합니다. 파일이 외부에서 변경됐다면 자동 중단합니다.</span></div>
+              </div>
+            </section>
+            <section class="handoff-card"><div class="handoff-icon">↗</div><div><strong>Next: TC Agent</strong><p>변경 승인 후 테스트 작성 에이전트로 연결하는 단계는 후속 버전에서 지원합니다.</p></div><span class="handoff-tag">SOON</span></section>
+          </aside>
+        </div>
+
+        <section class="panel activity-panel"><div class="panel-heading"><div class="heading-title"><span class="panel-glyph slate">↺</span><div><h2>작업 이력</h2><p>Session activity · 메모리 내 보관</p></div></div><span id="historyCounter" class="history-counter">0 runs</span></div><div id="historyList" class="history-list"><div class="no-history">아직 실행한 변경 작업이 없습니다. 위에서 첫 요청을 생성해보세요.</div></div></section>
+        <footer class="page-footer"><span>AX CODE-DEV GUI MVP · PRIVATE LOCAL BUILD</span><span>Scoped edits · Review-first · Zero telemetry</span></footer>
+        </div>
+        <div id="settingsView" class="page-view hidden">
+          <section class="settings-hero">
+            <div>
+              <div class="eyebrow"><span class="eyebrow-dash"></span> WORKSPACE CONFIGURATION</div>
+              <div class="settings-hero-title"><h1>Development <span>Environment</span></h1><span id="envSetupBadge" class="setup-badge">INITIAL SETUP</span></div>
+              <p id="envIntroText">프로젝트별 빌드 레시피와 수정 가능한 코드 범위를 먼저 정의하세요. 설정은 나중에도 언제든 수정할 수 있습니다.</p>
+            </div>
+            <div class="settings-hero-icon" aria-hidden="true">⚙</div>
+          </section>
+
+          <div class="settings-toolbar">
+            <div class="settings-toolbar-left"><span class="settings-status-dot"></span><span id="envUnsaved">저장된 설정 없음</span></div>
+            <div class="settings-toolbar-actions"><button type="button" class="btn btn-outline btn-sm" id="envTemplateKernel">IFPMIC 템플릿</button><button type="button" class="btn btn-outline btn-sm" id="envTemplateGeneric">일반 프로젝트</button></div>
+          </div>
+
+          <div class="settings-grid">
+            <div class="settings-main">
+              <section class="panel settings-card">
+                <div class="panel-heading"><div class="heading-title"><span class="panel-glyph blue">⌑</span><div><h2>프로젝트 연결</h2><p>Workspace · Project identity</p></div></div><span class="small-index">01 / PROJECT</span></div>
+                <div class="settings-fields">
+                  <div class="form-group"><label class="field-label" for="envWorkspacePath">PROJECT ROOT <span class="field-required">*</span></label><div class="settings-inline"><input type="text" id="envWorkspacePath" placeholder="/home/user/work/linux" spellcheck="false" /><button type="button" class="btn btn-outline" id="envLoadWorkspace">경로 연결</button></div><p class="field-caption">Python 서버가 실행되는 WSL/Linux 기준의 절대 경로입니다. 경로를 변경한 뒤에는 '경로 연결'을 누르세요.</p></div>
+                  <div class="settings-row-two"><div class="form-group"><label class="field-label" for="envProjectName">PROJECT NAME <span class="field-required">*</span></label><input id="envProjectName" type="text" placeholder="IFPMIC Charger" maxlength="120" /></div><div class="form-group"><label class="field-label" for="envProjectType">PROJECT TYPE</label><div class="select-wrapper"><select id="envProjectType"><option value="linux-kernel">Linux Kernel / Driver</option><option value="generic">일반 소스 프로젝트</option></select><span class="select-arrow">⌄</span></div></div></div>
+                </div>
+              </section>
+
+              <section class="panel settings-card">
+                <div class="panel-heading"><div class="heading-title"><span class="panel-glyph purple">▤</span><div><h2>빌드 환경</h2><p>Build recipe · Toolchain context</p></div></div><span class="small-index">02 / BUILD</span></div>
+                <div class="settings-fields">
+                  <div class="settings-info-strip"><span class="settings-info-mark">i</span> 빌드 명령어는 Code-Dev의 참고 정보로 저장합니다. 이 MVP에서는 실제로 실행하지 않습니다.</div>
+                  <div class="settings-row-three"><div class="form-group"><label class="field-label" for="envBuildDir">WORKING DIRECTORY <span class="field-required">*</span></label><input id="envBuildDir" spellcheck="false" placeholder="." /><p class="field-caption">프로젝트 루트 기준 상대 경로</p></div><div class="form-group"><label class="field-label" for="envArchitecture">ARCH</label><input id="envArchitecture" spellcheck="false" placeholder="arm64" /></div><div class="form-group"><label class="field-label" for="envCrossCompile">CROSS_COMPILE</label><input id="envCrossCompile" spellcheck="false" placeholder="aarch64-linux-gnu-" /></div></div>
+                  <div class="form-group"><label class="field-label" for="envBuildCommand">BUILD COMMAND <span class="field-required">*</span></label><textarea id="envBuildCommand" class="code-textarea" rows="4" spellcheck="false" placeholder="make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image dtbs modules"></textarea><p class="field-caption">실제 사용하는 빌드 명령어를 그대로 기록하세요. 명령어 실행 기능은 의도적으로 비활성화되어 있습니다.</p></div>
+                  <div class="form-group"><label class="field-label" for="envBuildEnv">ADDITIONAL ENVIRONMENT VARIABLES <span class="optional-tag">OPTIONAL</span></label><textarea id="envBuildEnv" class="code-textarea" rows="3" spellcheck="false" placeholder="LLVM=1&#10;KCFLAGS=-Werror"></textarea><p class="field-caption">각 행을 KEY=value로 입력합니다. API 키, 패스워드 등 비밀정보는 저장하지 마세요.</p></div>
+                </div>
+              </section>
+
+              <section class="panel settings-card">
+                <div class="panel-heading"><div class="heading-title"><span class="panel-glyph amber">⊞</span><div><h2>코드 수정 범위</h2><p>Allowlist · Exclusions · Agent rules</p></div></div><span class="small-index">03 / SCOPE</span></div>
+                <div class="settings-fields">
+                  <div class="settings-row-two"><div class="form-group"><label class="field-label" for="envEditablePaths">EDITABLE PATHS <span class="field-required">*</span></label><textarea id="envEditablePaths" class="code-textarea scope-textarea" rows="5" spellcheck="false" placeholder="drivers/power/supply/**&#10;include/linux/power/**"></textarea><p class="field-caption">한 줄에 패턴 1개. <code>*</code>는 한 단계, <code>**</code>는 하위 폴더 전체입니다.</p></div><div class="form-group"><label class="field-label" for="envBlockedPaths">EXCLUDED PATHS</label><textarea id="envBlockedPaths" class="code-textarea scope-textarea" rows="5" spellcheck="false" placeholder="**/*.key&#10;**/secrets/**"></textarea><p class="field-caption">수정 허용 경로에 포함돼도 여기 해당하면 접근을 차단합니다.</p></div></div>
+                  <div class="form-group"><label class="field-label" for="envChangeNotes">CHANGE TARGETS &amp; PURPOSE</label><textarea id="envChangeNotes" rows="3" placeholder="예: charger 입력 전류 제한, fuel gauge의 SOC 계산 경계값, 수정 가능한 핵심 함수 등"></textarea><p class="field-caption">어느 기능·함수를 왜 수정해야 하는지 설명하는 문맥입니다. 작업 요청과 함께 에이전트에 전달됩니다.</p></div>
+                  <div class="form-group"><label class="field-label" for="envCodeGuidelines">CODING RULES &amp; CONSTRAINTS</label><textarea id="envCodeGuidelines" rows="3" placeholder="예: 기존 커널 코딩 스타일 유지, IRQ 및 레이스 조건 주의, 불필요한 DT 수정 금지"></textarea></div>
+                </div>
+              </section>
+
+              <div class="settings-savebar"><div><strong>설정은 프로젝트별로 보존됩니다.</strong><small>설정을 수정해 저장하면 이전 설정으로 만든 미승인 제안의 반영이 차단됩니다.</small></div><div class="settings-saveactions"><button type="button" class="btn btn-outline" id="envRestoreBtn">입력 복원</button><button type="button" class="btn btn-primary" id="envSaveBtn"><span>✓</span> 환경 설정 저장</button></div></div>
+            </div>
+
+            <aside class="settings-aside">
+              <section class="panel settings-summary">
+                <div class="panel-heading"><div class="heading-title"><span class="panel-glyph blue">◈</span><div><h2>설정 미리보기</h2><p>Live configuration summary</p></div></div></div>
+                <div class="settings-summary-body"><div class="env-summary-identity"><div class="env-summary-avatar">&lt;/&gt;</div><div><strong id="envSummaryName">프로젝트명 미설정</strong><span id="envSummaryPath">Workspace 연결 필요</span></div></div>
+                  <div class="summary-divider"></div><div class="summary-pair"><span>PROJECT TYPE</span><strong id="envSummaryType">—</strong></div><div class="summary-pair"><span>WORKING DIRECTORY</span><strong id="envSummaryBuildDir">.</strong></div><div class="summary-pair"><span>EDITABLE FILES</span><strong id="envSummaryFiles">저장 후 계산</strong></div>
+                  <div class="summary-divider"></div><div class="review-detail-label">BUILD RECIPE · STORED ONLY</div><pre class="settings-command" id="envSummaryCommand">명령어를 입력하세요.</pre><div class="review-detail-label">EDIT SCOPE</div><pre class="settings-paths" id="envSummaryScope">경로 패턴을 입력하세요.</pre>
+                  <div class="summary-divider"></div><div class="settings-profile-status"><span id="envSummaryConfig">설정이 저장되지 않았습니다.</span><span id="envUpdateStamp">—</span></div>
+                </div>
+              </section>
+              <section class="settings-safety-panel"><div class="settings-safety-heading"><span>⚿</span> LOCAL CONFIG · CONTROLLED EDITS</div><p>설정은 소스 코드 저장소 밖의 로컬 사용자 설정에 저장합니다. 실행 명령을 호출하지 않으며, 서버가 수정 허용 경로를 검증합니다.</p><div class="settings-config-path" id="envConfigLocation">~/.config/ax-code-dev/profiles.json</div></section>
+              <button class="settings-next-button" type="button" id="envBackBtn"><span><strong>Code-Dev 작업 화면으로 이동</strong><small>설정 저장 후 코드 변경안을 생성할 수 있습니다.</small></span><span>→</span></button>
+            </aside>
+          </div>
+          <footer class="page-footer"><span>AX CODE-DEV · CONFIGURATION v0.2</span><span>Profiles outside repo · Build not executed · Explicit allowlist</span></footer>
+        </div>
+      </main>
+    </div>
+  </div>
+  <div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
+</body>
+</html>
