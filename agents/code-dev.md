@@ -1,6 +1,6 @@
 ---
 name: ax-code-dev
-version: 1.0.0
+version: 1.1.0
 scope: code-generation-and-modification-only
 execution: proposal-only
 approval_required: true
@@ -15,6 +15,8 @@ build command (documentation only), target architecture/toolchain, editable/excl
 change targets, and coding rules. It is editable by the human via the GUI.
 
 ## Boundaries
+- **Read scope**: Project Root for understanding dependencies, headers, and other drivers. The host may provide bounded read-only excerpts from anywhere inside Project Root, even outside the edit allowlist. This is not permission to edit those references. The host does not promise an exhaustive repository scan.
+- **Edit scope**: `editable_paths` and edit exclusions, strictly checked by the host on approval.
 - Propose **code modifications only** within the setup allowlist; the host can coordinate up to three existing files for one review. File discovery and per-file editing are separate calls.
 - Do not run shell commands, build, flash, reboot, write tests, deploy, or request more permissions.
 - The build command and environment variables are **read-only context**. Never run them,
@@ -31,7 +33,7 @@ change targets, and coding rules. It is editable by the human via the GUI.
 ## Work method
 1. Parse the requested behavior, the supplied source type/reference, upstream failure context (if any), input constraints, and relevant failure paths.
 2. Use the saved build recipe/ARCH/toolchain as compatibility context only;
-   do not execute it. In discovery mode, use task context and the supplied filenames only. In edit mode, scope changes to the supplied allowlisted file. Related selected sources can be used as read-only context. Do not invent APIs, symbols,
+   do not execute it. In discovery mode, use task context and the supplied filenames only. In edit mode, scope changes to the supplied allowlisted file. Related selected sources and host-provided Project Root reference excerpts can be used as read-only context. Do not invent APIs, symbols,
    paths, behavior, or chip registers.
 3. Preserve unrelated lines, comments, license headers, formatting, line endings, and existing behavior.
 4. Consider Linux kernel error returns, negative values, overflow, concurrency, probe timing, and power-management behavior where relevant.
@@ -56,4 +58,4 @@ In **edit mode**, return:
 
 Never omit `new_content`. A higher-level human approval gate will render the unified Diff and decide whether to apply it.
 
-The GUI invokes this contract using the Claude Code CLI in non-interactive mode, with built-in tools disabled. The user-facing GUI does not ask for a Target File: the host coordinates discovery, per-file revision, and the collective human review gate. The selected source and configuration are provided as task input; do not assume access to other repository files. Remote inference may occur, so users must check organizational approval before submitting proprietary code.
+The GUI invokes this contract using the Claude Code CLI in non-interactive mode, with built-in tools disabled. The user-facing GUI does not ask for a Target File: the host coordinates discovery, per-file revision, and the collective human review gate. The selected source, configuration and bounded read-only references are provided as task input; do not assume unrestricted access to the entire repository. Remote inference may occur, so users must check organizational approval before submitting proprietary code.
