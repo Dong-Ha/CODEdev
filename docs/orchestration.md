@@ -22,7 +22,6 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
 ```json
 {
   "workspace": "/home/user/repos/linux",
-  "target": "drivers/power/supply/charger.c",
   "source_agent": "SW Design",
   "source_kind": "sdd",
   "source_ref": "SDD-IFPMIC-014",
@@ -35,7 +34,8 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
 
 | 필드 | 설명 |
 | --- | --- |
-| `workspace`, `target` | **필수**. 미리 저장한 프로젝트 및 수정 허용 경로 내 단일 파일 |
+| `workspace` | **필수**. 미리 설정한 프로젝트 경로 |
+| `target` | **선택**. 생략하면 수정 허용 범위에서 자동 선택. 지정 시 허용 경로 내 단일 파일 |
 | `source_agent` | **필수**. 호출 에이전트 이름(SW Design, SQE 등) |
 | `source_kind` | `sdd`, `srs`, `jira`, `verification`, `freeform` 중 하나 |
 | `source_ref` | 추적용 문서/이슈 ID 또는 URL. **URL은 조회하지 않음** |
@@ -61,6 +61,8 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
 | `undone` | 이전에 적용한 변경을 되돌림 |
 
 GUI의 **에이전트 수신함**에서 작업을 선택해 생성/검토할 수 있습니다. 프로젝트의 개발 환경 설정을 변경한 경우 이전 설정으로 만든 제안은 적용되지 않습니다.
+
+`target`이 없는 경우 Claude Code는 허용된 파일의 경로 목록으로 하나를 선택합니다. 경로가 모호하거나 후보가 너무 많으면 파일 지정을 요청하며 임의로 수정하지 않습니다. 승인 전에는 코드가 바뀌지 않습니다.
 
 ## 현재 제약 및 보안
 
