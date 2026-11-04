@@ -307,17 +307,30 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
                                   source_content='Validation: negative current input must be rejected.')
         code, result = self.api('/api/agent/handoffs', data, agent_token=ax.AGENT_TOKEN)
         self.assertEqual(code, 202, result)
-        self.assertEqual(result['task']['status'], 'review')
-        self.assertTrue(result['task']['proposal_id'])
         self.assertTrue(result['task']['job_id'])
-        auto_job = self.api('/api/jobs/' + result['task']['job_id'])[1]['job']
+        auto_job = self.await_job(result['task']['job_id'])
         self.assertEqual(auto_job['status'], 'complete')
+        task = self.api('/api/inbox')[1]['tasks'][0]
+        self.assertEqual(task['status'], 'review')
+        self.assertTrue(task['proposal_id'])
         self.assertTrue(any(e['role'] == 'assistant' for e in auto_job['events']))
         self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
         self.assertEqual(self.api('/api/handoff/generate', {'id':result['task']['id']})[0], 409)
         logged = json.loads(Path(os.environ['AX_FAKE_CLAUDE_LOG']).read_text())
         self.assertIn('SQE Agent', logged['task'])
         self.assertIn('SQE-FAIL-8', logged['task'])
+
+    def test_15b_autogenerate_intake_returns_before_model_finishes(self):
+        os.environ['AX_FAKE_CLAUDE_DELAY'] = '0.9'
+        started = time.monotonic()
+        code, data = self.api('/api/agent/handoffs', self.agent_request(
+            auto_generate=True), agent_token=ax.AGENT_TOKEN)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 202, data)
+        self.assertLess(elapsed, 0.7, 'Intake must not wait for model completion')
+        self.assertTrue(data['task']['job_id'])
+        self.assertEqual(self.await_job(data['task']['job_id'], timeout=5)['status'], 'complete')
+        self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
 
     def test_16_handoff_rejects_bad_scope_and_bad_fields(self):
         wrong = self.agent_request(target='../etc/passwd')
@@ -688,10 +701,12 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
         status, response = self.api('/api/agent/handoffs', payload, agent_token=ax.AGENT_TOKEN)
         self.assertEqual(status, 202, response)
         task = response['task']
+        self.assertTrue(task['job_id'])
+        job = self.await_job(task['job_id'])
+        self.assertEqual(job['status'], 'no_change')
+        task = self.api('/api/inbox')[1]['tasks'][0]
         self.assertEqual(task['status'], 'no_change')
         self.assertEqual(task['target'], self.target)
-        job = self.api('/api/jobs/' + task['job_id'])[1]['job']
-        self.assertEqual(job['status'], 'no_change')
         self.assertEqual(job['cli_status'], 'succeeded')
         proposal = self.api('/api/proposal', {'id':task['proposal_id']})[1]['proposal']
         self.assertEqual(proposal['origin'], 'agent')

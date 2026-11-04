@@ -47,3 +47,14 @@ Windows 브라우저: **http://127.0.0.1:8765**
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+### Claude Code response timeout
+
+The Claude Code CLI is monitored by **response activity**, not by an absolute
+execution time limit. Once real `assistant` or `stream_event` data is received,
+each subsequent event renews the 180-second idle window. Long-running requests
+may therefore continue for longer than 180 seconds when Claude is still
+responding. If Claude never begins responding, or stops producing response
+events for 180 seconds, CODEdev stops the stalled subprocess and records an
+error. Merely starting the CLI does not count as a model response.
+

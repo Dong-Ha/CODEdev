@@ -44,6 +44,10 @@ MAX_REFERENCE_FILES = 8
 MAX_REFERENCE_SCAN = 4000
 MAX_REFERENCE_BYTES = 18000
 MAX_REFERENCE_FILE_BYTES = 64 * 1024
+# CLI timeout is based on inactivity, not wall-clock task duration.
+CLAUDE_STARTUP_TIMEOUT_SECONDS = 180.0
+CLAUDE_IDLE_TIMEOUT_SECONDS = 180.0
+CLAUDE_POLL_INTERVAL_SECONDS = 0.25
 REFERENCE_EXTENSIONS = {'.c', '.h', '.cpp', '.cc', '.hpp', '.dts', '.dtsi', '.rs', '.go', '.py', '.java', '.kt', '.S'}
 REFERENCE_BASENAMES = {'Makefile', 'Kconfig', 'Kbuild'}
 MAX_HISTORY = 35
@@ -609,17 +613,11 @@ def create_handoff(raw: dict) -> dict:
         HANDOFFS[item["id"]] = item
         HANDOFF_ORDER.insert(0, item["id"])
     if auto:
-        # Preserve the existing synchronous API response contract while also
-        # storing the request and Claude Code reply in the GUI run log.
+        # A 202 intake must never block for the whole model execution: HTTP
+        # clients and upstream agents have their own request timeouts. Start a
+        # job, return its id immediately, and let callers poll /api/jobs/{id}.
         try:
-            logged = start_job("handoff", {"id": item["id"]})
-            deadline = time.monotonic() + 390
-            while time.monotonic() < deadline:
-                with LOCK:
-                    status = JOBS.get(logged["id"], {}).get("status")
-                if status in {"complete", "no_change", "needs_clarification", "failed"}:
-                    break
-                time.sleep(0.04)
+            start_job("handoff", {"id": item["id"]})
         except ApiError as exc:
             with LOCK:
                 item["status"] = "failed"
@@ -643,6 +641,15 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
     oversized = False
     reader_error = None
     progress = {"init": False, "stream": False}
+    activity_lock = threading.Lock()
+    activity = {"last": time.monotonic(), "responding": False}
+
+    def record_model_activity() -> None:
+        # A real model message/delta (including a private thinking delta) is
+        # evidence of a live Claude response. We never put raw deltas in logs.
+        with activity_lock:
+            activity["last"] = time.monotonic()
+            activity["responding"] = True
 
     def show_claude_text(value: object) -> None:
         """Show actual non-JSON assistant prose, never thinking/tool/source payloads."""
@@ -674,6 +681,8 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
                 if not isinstance(event, dict):
                     continue
                 kind = event.get("type")
+                if kind in {"assistant", "stream_event", "result"}:
+                    record_model_activity()
                 if kind == "system" and event.get("subtype") == "init" and not progress["init"]:
                     progress["init"] = True
                     model = event.get("model")
@@ -722,12 +731,42 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
             try:
                 process.stdin.write(task)
                 process.stdin.close()
-                returncode = process.wait(timeout=180)
-            except subprocess.TimeoutExpired as exc:
-                process.kill()
-                process.wait(timeout=5)
-                read_thread.join(timeout=2)
-                raise ApiError("Claude Code 응답 시간(180초)이 초과되었습니다.", 504) from exc
+                # Do not terminate an active response after a fixed 180 seconds.
+                # Only fail if no model activity has occurred for the configured
+                # startup/idle period; every real streaming event renews the lease.
+                while True:
+                    if process.poll() is not None:
+                        returncode = process.returncode
+                        break
+                    with activity_lock:
+                        last_activity = activity["last"]
+                        responding = activity["responding"]
+                    idle_limit = (CLAUDE_IDLE_TIMEOUT_SECONDS if responding
+                                  else CLAUDE_STARTUP_TIMEOUT_SECONDS)
+                    remaining = idle_limit - (time.monotonic() - last_activity)
+                    if remaining <= 0:
+                        # One final check prevents killing a process which
+                        # emitted a new event while the watchdog was checking.
+                        with activity_lock:
+                            renewed = activity["last"] != last_activity
+                        if renewed:
+                            continue
+                        if process.poll() is not None:
+                            returncode = process.returncode
+                            break
+                        process.kill()
+                        process.wait(timeout=5)
+                        read_thread.join(timeout=2)
+                        stage = "response stopped" if responding else "response did not start"
+                        raise ApiError(
+                            f"Claude Code {stage}: no model activity for {idle_limit:g}s. "
+                            "Check the CLI session and retry.", 504)
+                    try:
+                        returncode = process.wait(timeout=min(
+                            CLAUDE_POLL_INTERVAL_SECONDS, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
             finally:
                 if process.stdin and not process.stdin.closed:
                     process.stdin.close()
