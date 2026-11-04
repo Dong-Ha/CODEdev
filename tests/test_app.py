@@ -241,7 +241,9 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
                 status, data = self.api('/api/propose', {
                     'workspace':str(ax.SAMPLE), 'prompt':'충전 전류 입력을 검증해줘.'})
                 self.assertEqual(status, 200, data)
-                self.assertEqual(data['proposal']['status'], 'needs_clarification')
+                # Batching forwards all allowlisted paths to Claude; it no longer
+                # refuses Korean-only requests because filename ranking scored 0.
+                self.assertEqual(data['proposal']['status'], 'review')
                 self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
         finally:
             second.unlink(missing_ok=True)

@@ -240,6 +240,13 @@ function renderEditableFileBrowser(kind, stale = false) {
       const size = document.createElement("span");
       size.className = "editable-files-size";
       size.textContent = file.size >= 1024 ? `${(file.size / 1024).toFixed(1)} KB` : `${file.size} B`;
+      if (file.size > 8 * 1024 * 1024) {
+        size.textContent += " · 처리 한도 초과";
+        size.title = "경로 규칙에는 매칭됩니다. 다만 현재 호스트의 코드 처리 상한인 8MB를 초과하여 변경안 생성은 지원하지 않습니다.";
+      } else if (file.size > 64 * 1024) {
+        size.textContent += " · 구간 수정";
+        size.title = "64KB 초과: 목록에 포함되며, Claude Code에는 원본과 일치하는 구간 교체 방식으로 요청합니다.";
+      }
       row.append(path, size);
       fragment.appendChild(row);
     }
