@@ -35,7 +35,7 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
 | 필드 | 설명 |
 | --- | --- |
 | `workspace` | **필수**. 미리 설정한 프로젝트 경로 |
-| `target` | **선택**. 생략하면 수정 허용 범위에서 자동 선택. 지정 시 허용 경로 내 단일 파일 |
+| `target` | **선택적 호환 필드**. 생략하는 것이 기본이며 허용 범위 내에서 관련 파일을 자동 탐색. 기존 상위 에이전트의 단일 파일 힌트만 지원 |
 | `source_agent` | **필수**. 호출 에이전트 이름(SW Design, SQE 등) |
 | `source_kind` | `sdd`, `srs`, `jira`, `verification`, `freeform` 중 하나 |
 | `source_ref` | 추적용 문서/이슈 ID 또는 URL. **URL은 조회하지 않음** |
@@ -55,7 +55,8 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
 | `queued` | 작업 수신, 아직 코드 제안 없음 |
 | `generating` | Claude Code 작업 생성 중 |
 | `review` | Diff 검토 및 승인 대기 |
-| `no_change` | Claude Code 호출 정상 완료, 현재 파일과 반환 코드 동일. 승인할 변경 없음 |
+| `no_change` | Claude Code 호출 정상 완료, 모든 대상 파일에 변경 없음. 승인할 변경 없음
+| `needs_clarification` | Claude Code가 대상 기능을 확정하지 못해 요청 명세 보완을 질문함. 파일은 수정되지 않음 |
 | `failed` | 변경안 생성 실패, 수신함에서 재시도 가능 |
 | `applied` | 사람이 승인하여 파일 반영 |
 | `rejected` | 제안 반려 |
@@ -63,7 +64,7 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
 
 GUI의 **에이전트 수신함**에서 작업을 선택해 생성/검토할 수 있습니다. 프로젝트의 개발 환경 설정을 변경한 경우 이전 설정으로 만든 제안은 적용되지 않습니다.
 
-`target`이 없는 경우 Claude Code는 허용된 파일의 경로 목록으로 하나를 선택합니다. 경로가 모호하거나 후보가 너무 많으면 파일 지정을 요청하며 임의로 수정하지 않습니다. 승인 전에는 코드가 바뀌지 않습니다.
+`target`이 없어도 Claude Code가 설정된 수정 허용 경로에서 관련 파일을 최대 3개 탐색합니다. 작업 내용이 모호하면 `needs_clarification`과 추가 질문을 반환하며, 사람에게 파일을 선택하라고 요구하지 않습니다. 코드 생성 후에는 모든 변경 파일을 Diff에서 검토하고 승인해야 실제 소스에 반영됩니다.
 
 ## 현재 제약 및 보안
 
@@ -72,7 +73,7 @@ GUI의 **에이전트 수신함**에서 작업을 선택해 생성/검토할 수
 - 수정 허용 경로 제한, 원본 SHA-256 확인, 명시적 사람 승인 절차는 두 진입 경로 모두 같습니다.
 - 원문/설정이 Claude Code의 구성된 AI 서비스로 전송될 수 있습니다. 인증 토큰을 URL/로그/문서에 남기지 마세요.
 
-## 실행 기록 및 결과 구분 (v0.8)
+## 실행 기록 및 결과 구분 (v1.0)
 
 The GUI uses asynchronous jobs so users can inspect real CLI progress while a
 proposal is running. A handoff can use `POST /api/jobs/handoff` with `{"id":"..."}`
@@ -87,12 +88,9 @@ independent `X-AX-Agent-Token`.
 | `GET /api/jobs` | List recent in-memory jobs (localhost) |
 | `GET /api/jobs/{id}` | Poll status, phase, visible messages, errors, proposal ID |
 
-Jobs have `queued`, `running`, `complete`, `no_change`, or `failed` status and a distinct
+Jobs have `queued`, `running`, `complete`, `no_change`, `needs_clarification`, or `failed` status and a distinct
 `phase`, plus `cli_status` (`not_started`, `running`, `succeeded`, `failed`).
 `no_change`는 **CLI 호출 성공 후 원본과 수정 결과가 같은 경우**이며, 구조화된 `summary`, `rationale`, `risk`, `checks`와 대상 파일을 조회할 수 있지만 실제 코드 적용은 허용되지 않습니다.
-`failed`는 실행 오류·형식 오류 등으로 작업이 완료되지 못한 상태입니다. Events distinguish submitted user instructions, CLI progress, visible
-Claude Code structured response summaries, and errors. Raw source, raw CLI
-JSON, tool internals, and hidden reasoning are intentionally omitted from the
-conversation UI. The structured change proposal remains in the Diff/Review
+`failed`는 실행 오류·형식 오류 등으로 작업이 완료되지 못한 상태입니다. Events distinguish submitted human instructions, the actual CLI task context (source excerpts/long file lists omitted), visible Claude Code assistant messages, structured response explanations, CLI progress and errors. Raw source, raw CLI JSON, tool internals and hidden reasoning are intentionally omitted from the conversation UI. The structured change proposal remains in the Diff/Review
 panel. Jobs do not persist after server restart. Existing synchronous APIs are
 kept for compatibility. `auto_generate=true` handoffs are also traced.
