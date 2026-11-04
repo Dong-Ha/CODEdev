@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* AX Code-Dev GUI demonstration only; NOT a production kernel driver. */
+/* AX Code-Dev GUI sample only; NOT a production kernel driver. */
 
 #include <linux/errno.h>
 #include <linux/types.h>

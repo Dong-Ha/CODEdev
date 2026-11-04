@@ -5,7 +5,6 @@ const state = {
   workspace: null,
   files: [],
   target: "",
-  engine: "claude",
   proposal: null,
   activeTab: "diff",
   busy: false,
@@ -177,20 +176,6 @@ function setSteps(level) {
   }
 }
 
-function setEngine(engine) {
-  state.engine = engine;
-  document.querySelectorAll("[data-engine]").forEach(el => {
-    const active = el.dataset.engine === engine;
-    el.classList.toggle("selected", active);
-    el.setAttribute("aria-pressed", active ? "true" : "false");
-  });
-  $("claudeConfig").classList.toggle("hidden", engine !== "claude");
-  $("submitNote").textContent = engine === "demo"
-    ? "데모 모드: 예제 파일의 고정된 변경안을 표시하며 AI는 호출하지 않습니다."
-    : "Claude Code CLI에 작업 요청, 개발 설정, 선택한 소스 파일 내용이 전달됩니다. 외부 AI 서비스로 전송될 수 있습니다.";
-  if (engine === "claude") refreshClaudeStatus();
-}
-
 async function refreshClaudeStatus() {
   $("claudeStatus").textContent = "Claude Code CLI 설치 상태 확인 중...";
   try {
@@ -211,8 +196,7 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
     state.proposal = null;
     $("workspaceInput").value = data.path;
     populateEnvironment(data);
-    $("workspacePill").textContent = !data.configured ? "SETUP REQUIRED" :
-      data.is_demo ? "DEMO · CONFIGURED" : "CONFIGURED";
+    $("workspacePill").textContent = data.configured ? "CONFIGURED" : "SETUP REQUIRED";
     $("workspacePill").classList.add("online");
     $("branchValue").textContent = data.branch;
     $("fileCount").textContent = String(data.files.length);
@@ -409,9 +393,9 @@ async function generate() {
   const prompt = $("taskPrompt").value.trim();
   if (!target) return toast("수정 대상 파일을 선택하세요.", "error");
   if (prompt.length < 5) return toast("작업 요청을 구체적으로 입력하세요.", "error");
-  setBusy(true, state.engine === "claude" ? "Claude Code가 변경안 생성 중..." : "데모 변경안 생성 중...");
+  setBusy(true, "Claude Code가 변경안 생성 중...");
   try {
-    const result = await request("/api/propose", { workspace: state.workspace, target, prompt, engine: state.engine });
+    const result = await request("/api/propose", { workspace: state.workspace, target, prompt });
     state.proposal = result.proposal;
     changeTab("diff");
     renderReview();
@@ -467,7 +451,7 @@ async function loadHistory() {
       const content = document.createElement("div"); content.className = "history-content";
       const title = document.createElement("div"); title.className = "history-title"; title.textContent = item.summary;
       const path = document.createElement("div"); path.className = "history-path";
-      path.textContent = `${item.target} · ${item.engine.toUpperCase()} · ${new Date(item.created_at).toLocaleString("ko-KR")}`;
+      path.textContent = `${item.target} · Claude Code · ${new Date(item.created_at).toLocaleString("ko-KR")}`;
       content.append(title,path);
       const chip = document.createElement("span"); chip.className = `history-status ${item.status}`; chip.textContent = names[item.status] || item.status;
       button.append(icon,content,chip);
@@ -486,7 +470,7 @@ async function loadHistory() {
 }
 
 async function initialize() {
-  $("fillDemoPrompt").addEventListener("click", () => { $("taskPrompt").value = SAMPLE_PROMPT; $("taskPrompt").focus(); });
+  $("fillSamplePrompt").addEventListener("click", () => { $("taskPrompt").value = SAMPLE_PROMPT; $("taskPrompt").focus(); });
   $("connectWorkspace").addEventListener("click", connectWorkspace);
   $("workspaceInput").addEventListener("keydown", event => { if (event.key === "Enter") connectWorkspace(); });
   $("envEditShortcut").addEventListener("click", () => showPage("settings"));
@@ -517,20 +501,19 @@ async function initialize() {
     state.proposal = null;
     renderPreview(); renderReview(); loadHistory();
   });
-  document.querySelectorAll("[data-engine]").forEach(el => el.addEventListener("click",() => setEngine(el.dataset.engine)));
   document.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click",() => changeTab(el.dataset.tab)));
   $("taskPrompt").value = SAMPLE_PROMPT;
-  setEngine("claude");
   try {
     const response = await request("/api/bootstrap");
     state.token = response.token;
+    await refreshClaudeStatus();
     $("serverSideStatus").textContent = "127.0.0.1 · 연결됨";
     state.configFile = response.config_file;
     $("envConfigLocation").textContent = response.config_file;
-    $("workspaceInput").value = response.last_workspace || response.demo_path;
+    $("workspaceInput").value = response.last_workspace || response.sample_path;
     await connectWorkspace();
     if (!state.workspace && response.last_workspace) {
-      $("workspaceInput").value = response.demo_path;
+      $("workspaceInput").value = response.sample_path;
       await connectWorkspace();
     }
     await loadHistory();

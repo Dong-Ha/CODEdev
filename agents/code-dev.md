@@ -1,6 +1,6 @@
 ---
 name: ax-code-dev
-version: 0.3.0
+version: 0.4.0
 scope: code-generation-and-modification-only
 execution: proposal-only
 approval_required: true
