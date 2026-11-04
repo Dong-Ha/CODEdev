@@ -121,20 +121,20 @@ def build_handler(context: dict):
                 if route =="/api/workspace":
                     root =context['resolve_workspace'] (body .get ("path"))
                     profile =context['profile_for'] (root )
-                    all_files =context['collect_files'] (root )
-                    allowed =context['configured_files'] (root ,profile ,all_files )
+                    scan =context['scan_workspace'] (root ,profile )
                     return self ._json (200 ,{"ok":True ,"path":str (root ),"name":root .name ,
-                    "branch":context['git_branch'] (root ),"files":allowed ,
-                    "total_files":len (all_files ),
+                    "branch":context['git_branch'] (root ),"files":scan ["files"],
+                    "scan":scan ["stats"],"total_files":scan ["stats"]["scanned_files"],
                     "configured":profile is not None ,
                     "config":profile if profile else context['default_profile'] (root ),
                     "is_sample":root ==context['SAMPLE'] .resolve ()})
                 if route =="/api/config/save":
                     root =context['resolve_workspace'] (body .get ("workspace"))
                     profile =context['save_profile'] (root ,body .get ("config"),body .get ("expected_revision"))
-                    allowed =context['configured_files'] (root ,profile )
+                    scan =context['scan_workspace'] (root ,profile )
                     return self ._json (200 ,{"ok":True ,"config":profile ,
-                    "editable_files":len (allowed ),"workspace":str (root )})
+                    "editable_files":len (scan ["files"]),"scan":scan ["stats"],
+                    "workspace":str (root )})
                 if route =="/api/file":
                     root =context['resolve_workspace'] (body .get ("workspace"))
                     path =context['resolve_target'] (root ,body .get ("target"))

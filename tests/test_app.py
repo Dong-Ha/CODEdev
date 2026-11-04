@@ -709,5 +709,41 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
         self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
 
 
+    def test_33_workspace_api_scans_allowlisted_nested_subtree(self):
+        # A kernel-sized arch/ folder used to exhaust the 1,500-file budget
+        # before the scanner reached drivers/power/supply/.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'linux-project'
+            unrelated = root / 'arch' / 'arm64' / 'boot' / 'dts'
+            unrelated.mkdir(parents=True)
+            for i in range(1503):
+                (unrelated / f'board_{i:04d}.c').write_text('int z;\n')
+            target = root / 'drivers' / 'power' / 'supply' / 'charger.c'
+            target.parent.mkdir(parents=True)
+            target.write_text('int charger;\n')
+            profile = ax.default_profile(root)
+            profile['project_type'] = 'linux-kernel'
+            profile['editable_paths'] = 'drivers/power/supply/**'
+            profile['build_command'] = 'make defconfig'
+            ax.save_profile(root, profile)
+            with patch.object(ax, 'MAX_FILES', 4):
+                status, data = self.api('/api/workspace', {'path': str(root)})
+                self.assertEqual(status, 200, data)
+                self.assertEqual([f['path'] for f in data['files']],
+                                 ['drivers/power/supply/charger.c'])
+                self.assertEqual(data['scan']['scanned_files'], 1)
+                self.assertEqual(data['scan']['editable_files'], 1)
+                self.assertFalse(data['scan']['truncated'])
+                self.assertEqual(data['total_files'], 1)
+                active = ax.profile_for(root)
+                config = {key: active[key] for key in ax.PROFILE_FIELDS}
+                status, saved = self.api('/api/config/save', {
+                    'workspace':str(root), 'config':config,
+                    'expected_revision': active['revision']})
+                self.assertEqual(status, 200, saved)
+                self.assertEqual(saved['editable_files'], 1)
+                self.assertFalse(saved['scan']['truncated'])
+
+
 if __name__ == '__main__':
     unittest.main()

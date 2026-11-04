@@ -4,6 +4,7 @@ const state = {
   token: null,
   workspace: null,
   files: [],
+  scan: null,
   target: "",
   proposal: null,
   activeTab: "diff",
@@ -181,6 +182,25 @@ function envFromForm() {
   return result;
 }
 
+function formatScanStatus(scan) {
+  if (!scan) return "개발 환경을 연결하면 탐색 결과가 표시됩니다.";
+  const explored = Number(scan.scanned_files || 0).toLocaleString("ko-KR");
+  const editable = Number(scan.editable_files || 0).toLocaleString("ko-KR");
+  let message = `탐색 후보 ${explored}개 · 수정 허용 ${editable}개`;
+  if (scan.truncated) message += ` · 탐색 제한: ${scan.limit_reason || "허용 경로를 좁혀주세요."}`;
+  else if (!scan.editable_files) message += " · 허용된 파일이 없습니다. Project Root와 경로 패턴을 확인하세요.";
+  else message += " · 탐색 완료";
+  if (Array.isArray(scan.missing_paths) && scan.missing_paths.length) {
+    message += ` · 없는/제외된 경로: ${scan.missing_paths.slice(0, 2).join(", ")}`;
+    if (scan.missing_paths.length > 2) message += ` 외 ${scan.missing_paths.length - 2}개`;
+  }
+  return message;
+}
+
+function scanNeedsAttention(scan) {
+  return Boolean(scan && (scan.truncated || (!scan.editable_files) || (scan.missing_paths || []).length));
+}
+
 function renderEnvironmentSummary() {
   const data = envFromForm();
   $("envSummaryName").textContent = data.project_name || "프로젝트명 미설정";
@@ -197,6 +217,10 @@ function renderEnvironmentSummary() {
     dirty ? "현재 입력은 저장되지 않았습니다" : "저장된 프로젝트 프로필";
   $("envSummaryFiles").textContent = !state.configured || dirty ? "저장 후 계산" :
     `${state.files.length}개 파일`;
+  $("envScanStatus").textContent = !state.configured || dirty
+    ? "경로를 저장하면 Project Root 아래에서 허용 파일을 우선 탐색합니다."
+    : formatScanStatus(state.scan);
+  $("envScanStatus").classList.toggle("warning", state.configured && !dirty && scanNeedsAttention(state.scan));
 }
 
 function populateEnvironment(data) {
@@ -261,7 +285,9 @@ async function saveEnvironment() {
       workspace: state.workspace, config: envFromForm(),
       expected_revision: state.configured ? state.config.revision : null,
     });
-    toast(`환경 설정 저장 완료 · 수정 허용 ${result.editable_files}개 파일`, "success");
+    toast(`환경 설정 저장 완료 · 수정 허용 ${result.editable_files}개 파일` +
+      (result.scan && result.scan.truncated ? " · 탐색 제한이 있으니 경로를 좁혀주세요." : ""),
+      result.scan && result.scan.truncated ? "info" : "success");
     await connectWorkspace(root, !firstSetup);
     if (firstSetup) showPage("code", true);
   } catch (err) { toast(err.message, "error"); }
@@ -475,7 +501,10 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
     const data = await request("/api/workspace", { path });
     state.workspace = data.path;
     state.files = data.files;
+    state.scan = data.scan || null;
     state.proposal = null;
+    $("workspaceScanStatus").textContent = formatScanStatus(state.scan);
+    $("workspaceScanStatus").classList.toggle("warning", scanNeedsAttention(state.scan));
     $("workspaceInput").value = data.path;
     populateEnvironment(data);
     $("workspacePill").textContent = data.configured ? "CONFIGURED" : "SETUP REQUIRED";
@@ -493,8 +522,10 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
     renderPreview();
     await loadInbox();
     showPage(!data.configured || keepSettings ? "settings" : "code", true);
-    toast(data.configured ? `${data.name} 연결 · 수정 허용 파일 ${data.files.length}개` :
-      `${data.name} 연결 · 환경 설정을 먼저 저장하세요.`, data.configured ? "success" : "info");
+    toast(data.configured
+      ? `${data.name} 연결 · 수정 허용 파일 ${data.files.length}개` + (data.scan?.truncated ? " · 탐색 제한" : "")
+      : `${data.name} 연결 · 환경 설정을 먼저 저장하세요.`,
+      data.configured && !scanNeedsAttention(data.scan) ? "success" : "info");
   } catch (error) {
     toast(error.message, "error");
   } finally {
