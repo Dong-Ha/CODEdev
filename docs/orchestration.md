@@ -94,3 +94,12 @@ Jobs have `queued`, `running`, `complete`, `no_change`, `needs_clarification`, o
 `failed`는 실행 오류·형식 오류 등으로 작업이 완료되지 못한 상태입니다. Events distinguish submitted human instructions, the actual CLI task context (source excerpts/long file lists omitted), visible Claude Code assistant messages, structured response explanations, CLI progress and errors. Raw source, raw CLI JSON, tool internals and hidden reasoning are intentionally omitted from the conversation UI. The structured change proposal remains in the Diff/Review
 panel. Jobs do not persist after server restart. Existing synchronous APIs are
 kept for compatibility. `auto_generate=true` handoffs are also traced.
+
+**Long-running auto-generate handoffs:** `POST /api/agent/handoffs` with
+`auto_generate=true` returns HTTP 202 immediately with `task.job_id`; it does
+not wait for Claude Code to finish. Poll `GET /api/agent/handoffs/{id}` with
+the agent token, or `GET /api/jobs/{job_id}` from the local GUI context. A live
+Claude Code response is not stopped by a fixed total duration: progress events
+renew its idle timeout. A model which does not start responding, or stops
+producing events for 180 seconds, is terminated and reported as failed.
+
