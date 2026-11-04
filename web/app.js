@@ -5,10 +5,9 @@ const state = {
   workspace: null,
   files: [],
   target: "",
-  engine: "demo",
+  engine: "claude",
   proposal: null,
   activeTab: "diff",
-  model: "",
   busy: false,
   configured: false,
   config: null,
@@ -185,37 +184,20 @@ function setEngine(engine) {
     el.classList.toggle("selected", active);
     el.setAttribute("aria-pressed", active ? "true" : "false");
   });
-  $("ollamaConfig").classList.toggle("hidden", engine !== "ollama");
+  $("claudeConfig").classList.toggle("hidden", engine !== "claude");
   $("submitNote").textContent = engine === "demo"
-    ? "데모 모드: 예제 파일에 고정된 변경안을 보여줍니다. LLM은 호출하지 않습니다."
-    : "Ollama는 127.0.0.1에 설치되어 있어야 합니다. 외부 AI API는 호출하지 않습니다.";
-  if (engine === "ollama") refreshModels();
+    ? "데모 모드: 예제 파일의 고정된 변경안을 표시하며 AI는 호출하지 않습니다."
+    : "Claude Code CLI에 작업 요청, 개발 설정, 선택한 소스 파일 내용이 전달됩니다. 외부 AI 서비스로 전송될 수 있습니다.";
+  if (engine === "claude") refreshClaudeStatus();
 }
 
-async function refreshModels() {
-  $("ollamaStatus").textContent = "로컬 Ollama 연결 확인 중...";
+async function refreshClaudeStatus() {
+  $("claudeStatus").textContent = "Claude Code CLI 설치 상태 확인 중...";
   try {
-    const result = await request("/api/models");
-    const select = $("modelSelect");
-    select.replaceChildren();
-    if (!result.online) {
-      const option = new Option("Ollama 오프라인 · ollama serve 필요", "");
-      select.add(option);
-      $("ollamaStatus").textContent = `서버에 연결할 수 없습니다 (${result.endpoint}).`;
-      return;
-    }
-    if (!result.models.length) {
-      select.add(new Option("설치된 Ollama 모델 없음", ""));
-      $("ollamaStatus").textContent = "모델 설치 후 새로고침하세요 (예: ollama list).";
-      return;
-    }
-    for (const name of result.models) select.add(new Option(name, name));
-    if (state.model && result.models.includes(state.model)) select.value = state.model;
-    state.model = select.value;
-    $("ollamaStatus").textContent = `${result.models.length}개 모델 감지 · ${result.endpoint}`;
-  } catch (err) {
-    $("ollamaStatus").textContent = err.message;
-  }
+    const result = await request("/api/claude/status");
+    $("claudeStatus").textContent = result.note;
+    $("claudeStatus").classList.toggle("ready", Boolean(result.installed));
+  } catch (err) { $("claudeStatus").textContent = err.message; }
 }
 
 async function connectWorkspace(pathOverride = null, keepSettings = false) {
@@ -427,12 +409,9 @@ async function generate() {
   const prompt = $("taskPrompt").value.trim();
   if (!target) return toast("수정 대상 파일을 선택하세요.", "error");
   if (prompt.length < 5) return toast("작업 요청을 구체적으로 입력하세요.", "error");
-  const model = $("modelSelect").value;
-  if (state.engine === "ollama" && !model) return toast("Ollama 모델을 먼저 선택하세요.", "error");
-  state.model = model;
-  setBusy(true, state.engine === "ollama" ? "로컬 AI가 변경안 생성 중..." : "데모 변경안 생성 중...");
+  setBusy(true, state.engine === "claude" ? "Claude Code가 변경안 생성 중..." : "데모 변경안 생성 중...");
   try {
-    const result = await request("/api/propose", { workspace: state.workspace, target, prompt, engine: state.engine, model });
+    const result = await request("/api/propose", { workspace: state.workspace, target, prompt, engine: state.engine });
     state.proposal = result.proposal;
     changeTab("diff");
     renderReview();
@@ -532,7 +511,7 @@ async function initialize() {
   $("applyBtn").addEventListener("click", () => performAction("apply"));
   $("rejectBtn").addEventListener("click", () => performAction("reject"));
   $("undoBtn").addEventListener("click", () => performAction("undo"));
-  $("refreshModels").addEventListener("click", refreshModels);
+  $("refreshClaude").addEventListener("click", refreshClaudeStatus);
   $("targetFile").addEventListener("change", event => {
     state.target = event.target.value;
     state.proposal = null;
@@ -541,7 +520,7 @@ async function initialize() {
   document.querySelectorAll("[data-engine]").forEach(el => el.addEventListener("click",() => setEngine(el.dataset.engine)));
   document.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click",() => changeTab(el.dataset.tab)));
   $("taskPrompt").value = SAMPLE_PROMPT;
-  setEngine("demo");
+  setEngine("claude");
   try {
     const response = await request("/api/bootstrap");
     state.token = response.token;

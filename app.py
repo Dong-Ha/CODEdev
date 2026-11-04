@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""AX Code-Dev GUI MVP: local-first, setup-gated code change proposals.
+"""AX Code-Dev GUI: Claude Code CLI proposals with explicit human approval.
 
-Requires Python 3.9+. Uses only Python's standard library. No telemetry.
-Only connects to the configured LOCAL Ollama endpoint when requested.
+Requires Python 3.9+. Uses only the standard library for the web server.
+The optional Claude Code CLI may contact the user-configured Anthropic/provider service.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import secrets
 import stat
 import subprocess
@@ -20,16 +21,13 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, build_opener, ProxyHandler
 
 BASE = Path(__file__).resolve().parent
 WEB = BASE / "web"
 DEMO = BASE / "demo_workspace"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("AX_PORT", "8765"))
-OLLAMA_HOST = os.environ.get("AX_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 MAX_FILE_BYTES = 64 * 1024
 MAX_REQUEST_BYTES = 24 * 1024
 MAX_FILES = 1500
@@ -37,8 +35,6 @@ MAX_HISTORY = 35
 CONFIG_FILE = Path(os.environ.get("AX_CONFIG_FILE", str(Path.home() / ".config" / "ax-code-dev" / "profiles.json"))).expanduser()
 CSRF = secrets.token_urlsafe(32)
 LOCK = threading.RLock()
-# Never honor HTTP(S)_PROXY environment variables for local LLM calls.
-LOCAL_HTTP = build_opener(ProxyHandler({}))
 PROPOSALS: dict[str, dict] = {}
 RECENT: list[str] = []
 EXTENSIONS = {".c", ".h", ".cpp", ".cc", ".hpp", ".py", ".rs", ".go",
@@ -368,7 +364,7 @@ def create_diff(path: str, old: str, new: str) -> tuple[list[dict], int, int]:
 
 def demo_proposal(root: Path, target: str, original: str) -> dict:
     if root != DEMO.resolve() or target != "drivers/power/supply/ax_ifpmic_charger.c":
-        raise ApiError("데모 엔진은 제공된 IFPMIC 예제 파일만 수정합니다. 실제 프로젝트는 Ollama 모드를 사용하세요.")
+        raise ApiError("데모 엔진은 제공된 IFPMIC 예제 파일만 수정합니다. 실제 프로젝트는 Claude Code 모드를 사용하세요.")
     old = "    chip->input_current_ma = current_ma;\n    return 0;\n"
     new = ("    /* Reject invalid requests before updating the cached current. */\n"
            "    if (current_ma < 0 || current_ma > AX_IFPMIC_INPUT_MAX_MA)\n"
@@ -386,39 +382,74 @@ def demo_proposal(root: Path, target: str, original: str) -> dict:
     }
 
 
-def call_ollama(prompt: str, target: str, original: str, model: str, profile: dict) -> dict:
-    if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9_./:-]{1,120}", model):
-        raise ApiError("올바른 Ollama 모델 이름을 입력하세요.")
-    if len(original) > 17000:
-        raise ApiError("Ollama MVP는 17,000자 이하 파일만 제안할 수 있습니다. 작은 대상 파일을 선택하세요.")
-    # Reusable single-agent contract. Agent and GUI can evolve independently.
-    system = (BASE / "agents" / "code-dev.md").read_text(encoding="utf-8")
+# Claude Code receives task data via stdin only. No repository filesystem permissions
+# are granted; the GUI remains the sole writer after explicit review approval.
+CLAUDE_RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "rationale": {"type": "string"},
+        "risk": {"type": "string"},
+        "checks": {"type": "array", "items": {"type": "string"}},
+        "new_content": {"type": "string"},
+    },
+    "required": ["summary", "rationale", "risk", "checks", "new_content"],
+    "additionalProperties": False,
+}
+
+
+def claude_status() -> dict:
+    # Only checks the executable; authentication is checked by Claude Code itself.
+    binary = shutil.which("claude")
+    return {"installed": binary is not None,
+            "note": ("Claude Code CLI 감지됨 · 인증 여부는 실행 시 확인" if binary else
+                     "WSL/Linux에 Claude Code CLI를 설치하고 'claude auth login'을 실행하세요.")}
+
+
+def call_claude(prompt: str, target: str, original: str, profile: dict) -> dict:
+    binary = shutil.which("claude")
+    if not binary:
+        raise ApiError("Claude Code CLI를 찾지 못했습니다. 서버가 실행되는 WSL/Linux에 설치하세요.", 503)
+    instructions = BASE / "agents" / "code-dev.md"
     context = {k: profile.get(k, "") for k in PROFILE_FIELDS}
-    # The stored build recipe is documentation for the coding agent, NEVER executed.
-    content = (f"Task:\n{prompt}\n\nEnvironment configuration (read-only; never run commands):\n"
-               f"{json.dumps(context, ensure_ascii=False)}\n\nTarget path: {target}\n"
-               f"File contents START\n{original}\nFile contents END")
-    raw = json.dumps({"model": model, "system": system, "prompt": content, "stream": False,
-                      "format": "json", "options": {"temperature": 0.1, "num_predict": 14000}},
-                     ensure_ascii=False).encode("utf-8")
-    req = Request(OLLAMA_HOST + "/api/generate", data=raw,
-                  headers={"Content-Type": "application/json"}, method="POST")
+    # Build recipe is task context, never a shell command; the selected source
+    # is sent in stdin, not made accessible to Claude's file-editing tools.
+    task = (f"Task:\n{prompt}\n\n"
+            "Environment configuration (reference only; never run build commands):\n"
+            f"{json.dumps(context, ensure_ascii=False)}\n\nTarget path: {target}\n"
+            f"File contents START\n{original}\nFile contents END\n"
+            "Return a complete revised file in new_content; do not modify files.")
+    cmd = [binary, "-p", "Return a structured code change proposal for the task in stdin.",
+           "--output-format", "json", "--json-schema", json.dumps(CLAUDE_RESULT_SCHEMA),
+           "--system-prompt-file", str(instructions),
+           "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+           "--permission-mode", "plan", "--no-session-persistence", "--max-turns", "1"]
     try:
-        with LOCAL_HTTP.open(req, timeout=150) as resp:
-            out = json.loads(resp.read(2_000_000))
-    except HTTPError as exc:
-        msg = exc.read(3000).decode("utf-8", errors="replace")
-        raise ApiError(f"Ollama HTTP {exc.code}: {msg}", 502)
-    except (URLError, TimeoutError, OSError) as exc:
-        raise ApiError(f"로컬 Ollama 연결에 실패했습니다: {exc}", 502)
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise ApiError(f"Ollama 응답 파싱 실패: {exc}", 502)
+        # An isolated cwd avoids loading project-local context or hooks from the
+        # target repository; user-level Claude settings can still apply.
+        with tempfile.TemporaryDirectory(prefix="ax-claude-") as scratch:
+            output = subprocess.run(cmd, input=task, cwd=scratch, capture_output=True,
+                                    text=True, timeout=180, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ApiError("Claude Code 응답 시간(180초)이 초과되었습니다.", 504) from exc
+    except OSError as exc:
+        raise ApiError("Claude Code CLI를 실행할 수 없습니다. 설치 상태와 실행 권한을 확인하세요.", 503) from exc
+    if output.returncode != 0:
+        # stderr may contain snippets of internal code, configuration, or auth
+        # state: never return it to the web client.
+        raise ApiError(f"Claude Code 실행 실패 (exit {output.returncode}). CLI 인증 상태를 'claude auth status'로 확인하세요.", 502)
+    if len(output.stdout) > 1_200_000:
+        raise ApiError("Claude Code 응답 크기가 제한을 초과했습니다.", 422)
     try:
-        result = json.loads(out["response"])
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise ApiError(f"모델이 유효한 JSON을 생성하지 못했습니다: {exc}", 422)
+        envelope = json.loads(output.stdout)
+        result = envelope.get("structured_output") if isinstance(envelope, dict) else None
+        if not isinstance(result, dict) and isinstance(envelope, dict):
+            raw = envelope.get("result")
+            result = json.loads(raw) if isinstance(raw, str) else None
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ApiError("Claude Code가 유효한 JSON 변경안을 반환하지 않았습니다.", 422) from exc
     if not isinstance(result, dict) or not isinstance(result.get("new_content"), str):
-        raise ApiError("모델 출력에 전체 파일 내용(new_content)이 없습니다.", 422)
+        raise ApiError("Claude Code 출력에 전체 파일 내용(new_content)이 없습니다.", 422)
     return result
 
 
@@ -441,7 +472,7 @@ def validate_result(result: dict, original: str) -> tuple[str, str, str, list[st
 
 
 def to_public(p: dict, full: bool = False) -> dict:
-    public = {k: p[k] for k in ("id", "workspace", "target", "engine", "model", "prompt",
+    public = {k: p[k] for k in ("id", "workspace", "target", "engine", "prompt",
                                  "summary", "rationale", "risk", "checks", "plus", "minus",
                                  "status", "created_at", "activity")}
     if full:
@@ -463,19 +494,18 @@ def propose(body: dict) -> dict:
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str) or not 5 <= len(prompt.strip()) <= 4000:
         raise ApiError("작업 요청은 5~4000자로 작성하세요.")
-    engine = body.get("engine", "demo")
-    if engine not in {"demo", "ollama"}:
+    engine = body.get("engine", "claude")
+    if engine not in {"demo", "claude"}:
         raise ApiError("지원하지 않는 에이전트 모드입니다.")
-    model = body.get("model", "") if engine == "ollama" else "built-in-demo"
     result = demo_proposal(root, str(target), original) if engine == "demo" else \
-             call_ollama(prompt, str(target), original, model, profile)
+             call_claude(prompt, str(target), original, profile)
     summary, rationale, risk, checks, revised = validate_result(result, original)
     diff, plus, minus = create_diff(str(target), original, revised)
     if not plus and not minus:
         raise ApiError("공백이나 줄바꿈을 포함한 실제 변경이 없습니다.", 422)
     p = {"id": secrets.token_hex(5), "workspace": str(root), "target": str(target),
          "config_revision": profile["revision"],
-         "engine": engine, "model": model, "prompt": prompt.strip(), "summary": summary,
+         "engine": engine, "prompt": prompt.strip(), "summary": summary,
          "rationale": rationale, "risk": risk, "checks": checks, "plus": plus, "minus": minus,
          "status": "review", "created_at": timestamp(), "original": original,
          "original_hash": sha(original), "new_content": revised, "new_hash": sha(revised),
@@ -541,20 +571,8 @@ def change_status(body: dict, action: str) -> dict:
         return to_public(p, True)
 
 
-def load_models() -> dict:
-    req = Request(OLLAMA_HOST + "/api/tags", method="GET")
-    try:
-        with LOCAL_HTTP.open(req, timeout=4) as resp:
-            data = json.loads(resp.read(800_000))
-        return {"online": True, "models": [m.get("name", "") for m in data.get("models", [])
-                                            if isinstance(m, dict) and m.get("name")],
-                "endpoint": OLLAMA_HOST}
-    except (OSError, ValueError, URLError):
-        return {"online": False, "models": [], "endpoint": OLLAMA_HOST}
-
-
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AXCodeDevMVP/0.2"
+    server_version = "AXCodeDevMVP/0.3"
     def _headers(self, status: int, mime: str = "application/json; charset=utf-8", length: int = 0):
         self.send_response(status)
         self.send_header("Content-Type", mime)
@@ -595,9 +613,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "token": CSRF, "demo_path": str(DEMO.resolve()),
                                     "last_workspace": store.get("last_workspace", ""),
                                     "config_file": str(CONFIG_FILE),
-                                    "version": "0.2.0", "limitations": {"max_file_kb": 64}})
-        if route == "/api/models":
-            return self._json(200, {"ok": True, **load_models()})
+                                    "version": "0.3.0", "limitations": {"max_file_kb": 64}})
+        if route == "/api/claude/status":
+            return self._json(200, {"ok": True, **claude_status()})
         if route == "/api/history":
             with LOCK:
                 return self._json(200, {"ok": True, "history": [to_public(PROPOSALS[i]) for i in RECENT]})
@@ -676,17 +694,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    # Avoid accidental outbound HTTP configuration; only loopback is allowed.
-    parsed = urlparse(OLLAMA_HOST)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
-        raise SystemExit("AX_OLLAMA_HOST must be a local HTTP endpoint (localhost/127.0.0.1).")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev GUI MVP 0.2.0")
+    print("AX Code-Dev GUI MVP 0.3.0")
     print(f"Open: http://{HOST}:{PORT}")
     print(f"Demo workspace: {DEMO.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")
-    print(f"Ollama endpoint: {OLLAMA_HOST} (local only, optional)")
-    print("No telemetry · No automatic code writes · Press Ctrl+C to stop")
+    print(f"Claude Code CLI: {'available' if claude_status()['installed'] else 'not found'}")
+    print("Note: Claude Code may transmit selected source/configuration to Anthropic or your configured provider.")
+    print("No GUI telemetry · No automatic source writes · Press Ctrl+C to stop")
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
