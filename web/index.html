@@ -15,7 +15,7 @@
       <div class="brand">
         <span class="brand-logo"><span class="brand-angle">⌁</span></span>
         <div><div class="brand-name">AX Studio</div><div class="brand-sub">AGENT WORKSPACE</div></div>
-        <span class="brand-version">v0.4</span>
+        <span class="brand-version">v0.5</span>
       </div>
 
       <div class="nav-section-label">WORKSPACE</div>
@@ -57,7 +57,7 @@
           <div>
             <div class="eyebrow"><span class="eyebrow-dash"></span> AI-ASSISTED DEVELOPMENT</div>
             <h1>Code-Dev <span>Agent</span></h1>
-            <p>요구사항을 코드 변경안으로 만들고, Diff를 검토한 뒤 승인하세요.</p>
+            <p>직접 요청하거나 AX 에이전트로부터 작업을 받아, 변경안을 검토하고 승인합니다.</p>
           </div>
           <div class="hero-mark" aria-hidden="true"><span class="hero-code">&lt;/&gt;</span><span class="hero-ring"></span></div>
         </section>
@@ -65,7 +65,7 @@
         <section class="stepper" aria-label="작업 단계">
           <div class="step active" id="step1"><div class="step-circle">1</div><div><strong>작업 정의</strong><small>요구사항 · 대상 파일</small></div></div>
           <div class="step-line"></div>
-          <div class="step" id="step2"><div class="step-circle">2</div><div><strong>변경안 생성</strong><small>Claude Code CLI</small></div></div>
+          <div class="step" id="step2"><div class="step-circle">2</div><div><strong>변경안 생성</strong><small>Claude Code</small></div></div>
           <div class="step-line"></div>
           <div class="step" id="step3"><div class="step-circle">3</div><div><strong>Diff 검토</strong><small>변경 영향 확인</small></div></div>
           <div class="step-line"></div>
@@ -91,12 +91,33 @@
           <button class="btn btn-outline btn-sm" type="button" id="activeEnvEdit">환경 설정</button>
         </section>
 
+        <section class="request-entry" aria-label="작업 요청 경로">
+          <div class="entry-copy"><strong>작업은 어디에서 시작되나요?</strong><span>요청 경로에 맞게 입력 항목만 바뀝니다. Diff 검토와 승인 절차는 동일합니다.</span></div>
+          <div class="entry-options" role="group" aria-label="요청 경로 선택">
+            <button type="button" id="modeHuman" class="entry-choice selected" aria-pressed="true"><strong>직접 요청</strong><span>SRS · SDD · Jira · 자유 요청</span></button>
+            <button type="button" id="modeAgent" class="entry-choice" aria-pressed="false"><strong>에이전트 수신함 <span id="inboxCount" class="entry-count">0</span></strong><span>SDD 인계 · 검증 피드백</span></button>
+          </div>
+        </section>
+
         <div class="work-grid">
           <section class="panel task-panel">
-            <div class="panel-heading"><div class="heading-title"><span class="panel-glyph purple">✎</span><div><h2>작업 요청</h2><p>Task configuration</p></div></div><span class="small-index">01 / INPUT</span></div>
-            <div class="panel-content">
-              <label for="taskPrompt" class="field-label">DEVELOPMENT INSTRUCTION</label>
-              <textarea id="taskPrompt" rows="7" placeholder="예: 충전 전류 설정 함수에서 음수 및 범위 초과 입력을 차단하고 기존 정상 동작은 유지해줘."></textarea>
+            <div class="panel-heading"><div class="heading-title"><span class="panel-glyph purple">✎</span><div><h2 id="taskPanelTitle">직접 개발 요청</h2><p id="taskPanelSubtitle">요구사항을 선택하여 전달</p></div></div><span class="small-index">01 / INPUT</span></div>
+            <div id="humanComposer" class="panel-content">
+              <label class="field-label" for="requestKind">요청 근거</label>
+              <div class="select-wrapper"><select id="requestKind">
+                <option value="freeform">자유 요청</option><option value="srs">SRS · 요구사항 명세</option>
+                <option value="sdd">SDD · 상세 설계</option><option value="jira">Jira 이슈</option>
+              </select><span class="select-arrow">⌄</span></div>
+              <div id="referenceFields" class="reference-fields hidden">
+                <label for="requestRef" class="field-label">문서 / 이슈 ID 또는 링크 <span class="optional-tag">선택</span></label>
+                <input id="requestRef" type="text" maxlength="300" placeholder="예: SDD-CHARGER-012 또는 https://jira.example/browse/PMIC-123" spellcheck="false" />
+                <label for="requestContent" class="field-label">참고 본문</label>
+                <textarea id="requestContent" rows="6" maxlength="12000" placeholder="SRS, SDD, Jira 이슈 본문과 수용 조건을 붙여넣으세요."></textarea>
+                <p class="field-caption" id="referenceHint">링크는 추적용으로만 저장됩니다. 본문은 자동으로 가져오지 않습니다.</p>
+              </div>
+              <div class="divider-soft"></div>
+              <label for="taskPrompt" class="field-label">개발 요청 <span class="field-required">*</span></label>
+              <textarea id="taskPrompt" rows="7" maxlength="4000" placeholder="예: 충전 전류 설정 함수에서 음수 및 범위 초과 입력을 차단하고 기존 정상 동작은 유지해줘."></textarea>
               <div class="hint-row"><span><span class="sparkle">✧</span> 구체적인 변경 조건을 입력하세요</span><button class="text-link" type="button" id="fillSamplePrompt">예시 불러오기</button></div>
 
               <div class="divider-soft"></div>
@@ -117,6 +138,21 @@
               <button class="btn btn-primary btn-generate" type="button" id="generateBtn"><span class="btn-sparkle">✦</span><span id="generateText">변경안 생성하기</span><span class="btn-arrow">→</span></button>
               <div class="submit-note" id="submitNote">Claude Code CLI에 작업 요청, 설정, 선택한 소스가 전달됩니다. 변경안 승인 전까지 소스는 수정되지 않습니다.</div>
             </div>
+            <div id="agentInbox" class="panel-content hidden">
+              <div class="inbox-heading"><div><strong>수신 작업</strong><p>현재 프로젝트에 전달된 작업</p></div><button type="button" class="btn btn-outline btn-sm" id="refreshInbox">새로고침</button></div>
+              <p id="agentIntakeStatus" class="inbox-integration-status" role="status">에이전트 연동 상태 확인 중</p>
+              <div id="inboxList" class="inbox-list" aria-live="polite"><div class="inbox-empty">수신한 작업이 없습니다.</div></div>
+              <div id="inboxDetails" class="inbox-details hidden">
+                <div class="inbox-selected"><span class="field-label">선택한 작업</span><strong id="incomingTitle">—</strong><span id="incomingMeta">—</span></div>
+                <p class="inbox-instruction" id="incomingInstruction"></p>
+                <div class="inbox-compact"><span>대상 파일</span><code id="incomingTarget">—</code></div>
+                <div class="inbox-compact"><span>근거 자료</span><span id="incomingReference">—</span></div>
+                <details id="incomingSourceDetails" class="incoming-source hidden"><summary>인계 문서 / 검증 내용 보기</summary><pre id="incomingSourceContent"></pre></details>
+                <div id="incomingError" class="inbox-error hidden" role="alert"></div>
+                <button type="button" id="inboxAction" class="btn btn-primary btn-generate">작업을 선택하세요</button>
+                <p class="submit-note">자동 생성 여부와 관계없이 파일 적용에는 별도의 사람 승인이 필요합니다.</p>
+              </div>
+            </div>
           </section>
 
           <section class="panel diff-panel">
@@ -130,7 +166,7 @@
           <aside class="review-column">
             <section class="panel review-panel"><div class="panel-heading"><div class="heading-title"><span class="panel-glyph amber">◇</span><div><h2>Review Gate</h2><p>Human-in-the-loop approval</p></div></div></div>
               <div class="review-inner"><div class="review-status" id="reviewStatus"><div class="review-status-icon">⋯</div><strong>승인 대기 없음</strong><p>변경안이 생성되면<br />여기에 검토 항목이 표시됩니다.</p></div>
-                <div id="reviewContent" class="review-content hidden"><div class="review-detail-label">CHANGE SUMMARY</div><h3 id="proposalSummary">—</h3><p id="proposalRationale" class="proposal-rationale"></p><div class="risk-line"><span>예상 위험도</span><span class="risk-chip" id="proposalRisk">검토 필요</span></div><div class="review-detail-label" style="margin-top:18px">REVIEW CHECKLIST</div><div id="reviewChecklist" class="review-checklist"></div><div class="review-detail-label" style="margin-top:18px">SUGGESTED VALIDATION · NOT RUN</div><div id="reviewGuidance" class="review-guidance"></div></div>
+                <div id="reviewContent" class="review-content hidden"><div class="proposal-provenance" id="proposalProvenance" aria-label="변경 요청 출처"></div><div class="review-detail-label">CHANGE SUMMARY</div><h3 id="proposalSummary">—</h3><p id="proposalRationale" class="proposal-rationale"></p><div class="risk-line"><span>예상 위험도</span><span class="risk-chip" id="proposalRisk">검토 필요</span></div><div class="review-detail-label" style="margin-top:18px">REVIEW CHECKLIST</div><div id="reviewChecklist" class="review-checklist"></div><div class="review-detail-label" style="margin-top:18px">SUGGESTED VALIDATION · NOT RUN</div><div id="reviewGuidance" class="review-guidance"></div></div>
                 <div class="approval-actions"><button type="button" id="applyBtn" class="btn btn-accept" disabled><span>✓</span> 승인 후 파일 반영</button><div class="approval-secondary"><button type="button" id="rejectBtn" class="btn btn-neutral" disabled>제안 반려</button><button type="button" id="undoBtn" class="btn btn-neutral" disabled>반영 되돌리기</button></div></div>
                 <div class="review-safety"><span>⚿</span><span>승인 시에만 워크스페이스 파일에 기록합니다. 파일이 외부에서 변경됐다면 자동 중단합니다.</span></div>
               </div>
@@ -202,7 +238,7 @@
               <button class="settings-next-button" type="button" id="envBackBtn"><span><strong>Code-Dev 작업 화면으로 이동</strong><small>설정 저장 후 코드 변경안을 생성할 수 있습니다.</small></span><span>→</span></button>
             </aside>
           </div>
-          <footer class="page-footer"><span>AX CODE-DEV · CONFIGURATION v0.4</span><span>Profiles outside repo · Build not executed · Explicit allowlist</span></footer>
+          <footer class="page-footer"><span>AX CODE-DEV · CONFIGURATION v0.5</span><span>Profiles outside repo · Build not executed · Explicit allowlist</span></footer>
         </div>
       </main>
     </div>
