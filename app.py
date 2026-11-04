@@ -35,6 +35,9 @@ MAX_REQUEST_BYTES = 48 * 1024
 MAX_HANDOFFS = 80
 AGENT_TOKEN = os.environ.get("AX_AGENT_TOKEN", "")
 MAX_FILES = 1500
+MAX_SCAN_FILES = 120000
+MAX_SCAN_DIRS = 40000
+MAX_SCAN_DEPTH = 32
 MAX_AUTO_TARGET_FILES = 400
 MAX_HISTORY = 35
 CONFIG_FILE = Path(os.environ.get("AX_CONFIG_FILE", str(Path.home() / ".config" / "ax-code-dev" / "profiles.json"))).expanduser()
@@ -204,9 +207,9 @@ def require_editable(root: Path, target: str, profile: dict | None = None) -> di
     return profile
 
 
-def configured_files(root: Path, profile: dict | None, files: list[dict] | None = None) -> list[dict]:
-    files = collect_files(root) if files is None else files
-    return [f for f in files if editable(profile, f["path"])] if profile else []
+def configured_files(root: Path, profile: dict | None) -> list[dict]:
+    """Enumerate allowed files first; never cap unrelated project files."""
+    return scan_workspace(root, profile)["files"]
 
 
 def save_profile(root: Path, raw: object, expected_revision: object = None) -> dict:
@@ -298,29 +301,127 @@ def resolve_workspace(raw_path: object) -> Path:
     return root
 
 
-def collect_files(root: Path) -> list[dict]:
-    found = []
-    for base, dirs, files in os.walk(root, followlinks=False):
-        path = Path(base)
-        depth = len(path.relative_to(root).parts)
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")
-                         and not (path / d).is_symlink()) if depth < 9 else []
-        for name in sorted(files):
-            if name.startswith(".") or Path(name).suffix.lower() not in EXTENSIONS:
-                continue
-            path_file = path / name
-            if path_file.is_symlink():
-                continue
-            try:
-                s = path_file.stat()
-            except OSError:
-                continue
-            if not stat.S_ISREG(s.st_mode) or s.st_size > MAX_FILE_BYTES:
-                continue
-            found.append({"path": path_file.relative_to(root).as_posix(), "size": s.st_size})
-            if len(found) >= MAX_FILES:
-                return found
-    return found
+def _scope_anchor(root: Path, pattern: str) -> Path | None:
+    """Resolve the non-glob prefix of an allowlist pattern within the project root.
+
+    A pattern like drivers/power/supply/** starts at that directory rather
+    than scanning an unrelated arch/ subtree first. For wildcard-first
+    patterns the anchor is the project root.
+    """
+    parts = []
+    for part in pattern.lstrip("./").split("/"):
+        if not part or any(char in part for char in "*?"):
+            break
+        parts.append(part)
+    anchor = root
+    for part in parts:
+        anchor = anchor / part
+        if part.startswith(".") or part in SKIP_DIRS or anchor.is_symlink():
+            return None
+    return anchor
+
+
+def scan_workspace(root: Path, profile: dict | None) -> dict:
+    """Find editable files relative to Project Root, with explicit limits.
+
+    Only source candidates in the configured path prefixes count toward the
+    scan budgets. Limits are visible in API stats, never silently presented
+    as an exhaustive list. Directory symlinks and system/build dirs are skipped.
+    """
+    stats = {"scanned_files": 0, "editable_files": 0, "searched_roots": 0,
+             "truncated": False, "limit_reason": "", "missing_paths": []}
+    if profile is None:
+        return {"files": [], "stats": stats}
+    includes = parse_patterns(profile.get("editable_paths", ""), required=True)
+    excludes = parse_patterns(profile.get("blocked_paths", ""))
+    anchors = {}
+    for pattern in includes:
+        anchor = _scope_anchor(root, pattern)
+        if anchor is None:
+            stats["missing_paths"].append(pattern + " (제외 폴더/심볼릭 링크)")
+        elif not anchor.exists():
+            stats["missing_paths"].append(pattern)
+        else:
+            # More specific roots are visited first, including when broad
+            # and narrow allowlist entries overlap.
+            anchors[str(anchor)] = anchor
+    sorted_anchors = sorted(anchors.values(), key=lambda p: (-len(p.relative_to(root).parts), str(p)))
+    stats["searched_roots"] = len(sorted_anchors)
+    result = []
+    seen = set()
+    visited_dirs = set()
+
+    def limit(message: str) -> None:
+        stats["truncated"] = True
+        stats["limit_reason"] = message
+
+    def consider(file_path: Path) -> bool:
+        """Return False when a budget is exceeded and scanning must stop."""
+        if file_path.name.startswith(".") or file_path.suffix.lower() not in EXTENSIONS:
+            return True
+        if file_path.is_symlink():
+            return True
+        relative = file_path.relative_to(root).as_posix()
+        if relative in seen:
+            return True
+        seen.add(relative)
+        stats["scanned_files"] += 1
+        if stats["scanned_files"] > MAX_SCAN_FILES:
+            limit(f"탐색 후보 {MAX_SCAN_FILES:,}개 초과 · 허용 경로를 좁혀주세요.")
+            return False
+        try:
+            details = file_path.stat()
+        except OSError:
+            return True
+        if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_FILE_BYTES:
+            return True
+        if not any(glob_matches(p, relative) for p in includes):
+            return True
+        if any(glob_matches(p, relative) for p in excludes):
+            return True
+        if len(result) >= MAX_FILES:
+            limit(f"수정 허용 파일 {MAX_FILES:,}개 초과 · 허용 경로를 좁혀주세요.")
+            return False
+        result.append({"path": relative, "size": details.st_size})
+        return True
+
+    for anchor in sorted_anchors:
+        depth = len(anchor.relative_to(root).parts)
+        if depth > MAX_SCAN_DEPTH:
+            limit(f"최대 탐색 깊이 {MAX_SCAN_DEPTH}단계 초과 · Project Root를 조정하세요.")
+            break
+        if anchor.is_file():
+            if not consider(anchor):
+                break
+            continue
+        if not anchor.is_dir():
+            continue
+        for base, dirs, files in os.walk(anchor, followlinks=False):
+            directory = Path(base)
+            rel_directory = directory.relative_to(root)
+            if directory not in visited_dirs:
+                visited_dirs.add(directory)
+                if len(visited_dirs) > MAX_SCAN_DIRS:
+                    limit(f"탐색 폴더 {MAX_SCAN_DIRS:,}개 초과 · 허용 경로를 좁혀주세요.")
+                    break
+            current_depth = len(rel_directory.parts)
+            allowed_dirs = [name for name in dirs if name not in SKIP_DIRS
+                            and not name.startswith(".") and not (directory / name).is_symlink()]
+            if current_depth >= MAX_SCAN_DEPTH:
+                if allowed_dirs:
+                    limit(f"최대 탐색 깊이 {MAX_SCAN_DEPTH}단계 초과 · Project Root를 조정하세요.")
+                dirs[:] = []
+            else:
+                dirs[:] = sorted(allowed_dirs)
+            for name in sorted(files):
+                if not consider(directory / name):
+                    break
+            if stats["truncated"]:
+                break
+        if stats["truncated"]:
+            break
+    stats["editable_files"] = len(result)
+    return {"files": result, "stats": stats}
 
 
 def resolve_target(root: Path, target: object) -> Path:
@@ -637,7 +738,11 @@ def task_context(prompt: str, profile: dict, context: dict | None = None) -> str
 
 def select_target(root: Path, prompt: str, profile: dict, context: dict, on_event=None) -> str:
     """Select one allowlisted file, rejecting ambiguous or fabricated paths."""
-    candidates = configured_files(root, profile)
+    scan = scan_workspace(root, profile)
+    candidates = scan["files"]
+    if scan["stats"]["truncated"]:
+        raise ApiError("파일 탐색이 제한되었습니다: " + scan["stats"]["limit_reason"]
+                       + " Target File을 직접 지정하거나 수정 허용 경로를 좁혀주세요.", 422)
     if not candidates:
         raise ApiError("수정 허용 파일이 없습니다. 개발 환경의 수정 허용 경로를 확인하세요.", 409)
     if len(candidates) == 1:
