@@ -16,7 +16,7 @@
       <div class="brand">
         <span class="brand-logo"><span class="brand-angle">⌁</span></span>
         <div><div class="brand-name">AX Studio</div><div class="brand-sub">AGENT WORKSPACE</div></div>
-        <span class="brand-version">v0.8</span>
+        <span class="brand-version">v1.0</span>
       </div>
 
       <div class="nav-section-label">WORKSPACE</div>
@@ -109,7 +109,7 @@
           <div class="run-summary" id="runSummary">작업을 시작하면 요청과 Claude Code의 응답이 표시됩니다.</div>
           <div class="run-console-body hidden" id="runConsoleBody">
             <div id="runMessages" class="run-messages" role="log" aria-label="Claude Code messages and run events" aria-live="polite" aria-relevant="additions"><div class="run-empty">아직 기록이 없습니다.</div></div>
-            <div class="run-console-footer"><span>요청 원문과 실제 응답 요약만 표시합니다. 소스는 Diff에서 확인하세요.</span><span id="runTargetLabel" class="run-target">대상 파일 확인 전</span><span id="runIdLabel" class="run-id">&#8212;</span></div>
+            <div class="run-console-footer"><span>실제 요청·Claude Code 응답·실행 이벤트를 표시합니다. 내부 추론·소스 JSON은 표시하지 않으며, 전체 코드는 Diff에서 확인하세요.</span><span id="runTargetLabel" class="run-target">허용 경로에서 탐색 전</span><span id="runIdLabel" class="run-id">&#8212;</span></div>
           </div>
         </section>
 
@@ -135,9 +135,7 @@
               <div class="hint-row"><span><span class="sparkle">✧</span> 구체적인 변경 조건을 입력하세요</span><button class="text-link" type="button" id="fillSamplePrompt">예시 불러오기</button></div>
 
               <div class="divider-soft"></div>
-              <label for="targetFile" class="field-label">Target File <span class="optional-tag">선택</span></label>
-              <div class="select-wrapper"><select id="targetFile"><option value="">환경 설정 후 자동 선택</option></select><span class="select-arrow">⌄</span></div>
-              <p class="field-caption">비워두면 Claude Code가 개발 환경의 수정 허용 파일에서 대상을 찾습니다. 직접 지정하면 해당 파일만 검토합니다. 한 번에 파일 1개만 변경합니다.</p>
+              <div class="scope-auto-note" role="note"><strong>개발 범위 자동 적용</strong><p>설정한 수정 허용 경로 내에서 Claude Code가 관련 파일을 찾습니다. 파일을 지정할 필요가 없으며, 변경 대상은 Diff 검토에서 확인합니다. 여러 파일의 변경안도 검토할 수 있습니다.</p></div>
 
               <div class="divider-soft"></div>
               <div class="field-label">CODE GENERATION · CLAUDE CODE ONLY</div>
@@ -148,7 +146,7 @@
                 <div class="cloud-disclosure">⚠ Claude Code 호출 시 선택한 소스와 개발 설정이 Anthropic 또는 구성된 AI 제공자에게 전송될 수 있습니다. 사내 코드의 전송 허용 여부를 먼저 확인하세요.</div>
               </div>
 
-              <div class="guardrails"><div class="guardrails-title"><span>♢</span> SAFETY GUARDRAILS</div><div class="guardrail-row"><span>✓</span> 선택한 파일만 변경</div><div class="guardrail-row"><span>✓</span> 적용 전 수동 승인 필수</div><div class="guardrail-row"><span>✓</span> 빌드 / 플래싱 / 코드 편집 도구 실행 제외</div></div>
+              <div class="guardrails"><div class="guardrails-title"><span>♢</span> SAFETY GUARDRAILS</div><div class="guardrail-row"><span>✓</span> 설정된 수정 허용 경로 내에서만 변경</div><div class="guardrail-row"><span>✓</span> 적용 전 수동 승인 필수</div><div class="guardrail-row"><span>✓</span> 빌드 / 플래싱 / 코드 편집 도구 실행 제외</div></div>
               <button class="btn btn-primary btn-generate" type="button" id="generateBtn"><span class="btn-sparkle">✦</span><span id="generateText">변경안 생성하기</span><span class="btn-arrow">→</span></button>
               <div class="submit-note" id="submitNote">Claude Code CLI에 작업 요청, 설정, 선택한 소스가 전달됩니다. 변경안 승인 전까지 소스는 수정되지 않습니다.</div>
             </div>
@@ -172,8 +170,8 @@
           <section class="panel diff-panel">
             <div class="panel-heading"><div class="heading-title"><span class="panel-glyph blue">≠</span><div><h2>코드 변경 미리보기</h2><p>Diff &amp; change inspection</p></div></div><div class="diff-header-stats" id="diffStats"><span class="empty-stat">No changes</span></div></div>
             <div class="diff-toolbar"><div class="tab-list" role="tablist" aria-label="코드 보기 방식"><button class="tab-button active" data-tab="diff" role="tab" aria-selected="true">Unified Diff</button><button class="tab-button" data-tab="original" role="tab" aria-selected="false">Original</button><button class="tab-button" data-tab="revised" role="tab" aria-selected="false">Revised</button></div><span id="fileStatus" class="file-status"><span class="status-idle-dot"></span> AWAITING TASK</span></div>
-            <div class="file-path-bar"><span class="file-tree-icon">▥</span><span id="filePathLabel">No file selected</span><span class="file-path-lang" id="fileLang">—</span></div>
-            <div class="diff-body" id="diffBody"><div class="empty-diff"><div class="empty-diff-icon"><span>{ }</span></div><h3>새로운 변경을 시작하세요</h3><p>왼쪽에서 요청과 대상 파일을 선택하면<br />에이전트의 변경안을 여기에서 비교할 수 있습니다.</p><span class="empty-caption">BEFORE APPLYING TO YOUR REPOSITORY</span></div></div>
+            <div class="file-path-bar"><span class="file-tree-icon">▥</span><span id="filePathLabel">변경안 생성 전</span><span class="file-path-lang" id="fileLang">—</span></div><div id="reviewFilesBar" class="review-files-bar hidden"><label for="reviewFileSelect">검토 파일</label><select id="reviewFileSelect" aria-label="변경안 파일별 비교"></select><span id="reviewFilesCount" class="review-file-count"></span></div>
+            <div class="diff-body" id="diffBody"><div class="empty-diff"><div class="empty-diff-icon"><span>{ }</span></div><h3>새로운 변경을 시작하세요</h3><p>요청을 보내면 허용 경로에서 관련 파일을 자동으로 찾고<br />변경안을 여기에서 비교할 수 있습니다.</p><span class="empty-caption">BEFORE APPLYING TO YOUR REPOSITORY</span></div></div>
             <div class="diff-footer"><div class="diff-footer-left"><span class="review-dot"></span><span id="diffFooterMessage">변경 사항을 기다리는 중</span></div><span class="diff-footer-right">READ-ONLY PREVIEW</span></div>
           </section>
 
