@@ -35,6 +35,9 @@ Windows 브라우저: **http://127.0.0.1:8765**
 **보안:** Claude Code 호출 시 작업 요청, 소스 및 개발 설정이 AI 서비스로 전송될 수 있습니다. 사내 소스는 조직 정책을 확인하고, 설정에 비밀정보를 입력하지 마세요.
 
 
+
+**Reading is not editing:** `Project Root` is the read-only source-reference boundary. `editable_paths` and `blocked_paths` limit **changes only**, not which related code can be consulted. CODEdev can read bounded excerpts of other drivers, kernel headers, Makefile/Kconfig, and related files within Project Root. The tool still passes only selected relevant references to Claude Code; it does not send or index the entire repository. Hidden/secret paths, symlinks and unsafe file types are excluded. The CLI has no shell or unrestricted filesystem tools.
+
 ## Claude Code 대화 및 실행 기록
 
 요청 전송 후 GUI에서 **Claude Code 호출 상태, 관련 파일, 사용자 요청, Claude Code에 전달한 작업 지시(소스 원문 제외), 실제 Claude Code 응답 및 판단 근거, 실패 사유**를 확인할 수 있습니다. CLI 호출 성공과 코드 변경 유무를 별도 표시합니다. **변경 없음**은 호출 실패가 아니며, Claude Code가 반환한 설명을 확인하고 요청을 수정해 다시 보낼 수 있습니다. 이때 승인·반영은 불가능하며 원본 파일은 유지됩니다. 원시 JSON·소스 원문·내부 추론은 대화창에 표시하지 않습니다. 여러 파일의 변경안은 Diff에서 파일별로 확인한 뒤 일괄 승인합니다. 기록은 서버 메모리에만 보관되며 재시작 시 사라집니다.
