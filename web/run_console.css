@@ -42,3 +42,9 @@
 .inbox-task-status.no_change{background:#fff5e4;color:#895e24}
 @media(max-width:650px){.run-console-header{align-items:flex-start}.run-header-actions{width:100%;justify-content:flex-end}.run-summary{padding:12px 14px}.run-messages{padding:12px;max-height:360px}.run-console-footer{flex-direction:column;align-items:flex-start}.run-id{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.conversation-panel *{scroll-behavior:auto}}
+
+/* An ambiguous request is a completed CLI interaction, not a failing build. */
+.run-status.needs_clarification,.inbox-task-status.needs_clarification{color:#82561d;background:#fff6e3;border-color:#ecd8b0}
+.review-status.needs_clarification{background:#fffaf0;border-color:#efdfb9;height:auto;min-height:145px}
+.review-status.needs_clarification .review-status-icon{background:#fff0c9;color:#9b6b27}
+.history-status.needs_clarification,.history-icon.needs_clarification{background:#fff6e3;color:#936421}
