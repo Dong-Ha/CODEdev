@@ -55,6 +55,7 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
 | `queued` | 작업 수신, 아직 코드 제안 없음 |
 | `generating` | Claude Code 작업 생성 중 |
 | `review` | Diff 검토 및 승인 대기 |
+| `no_change` | Claude Code 호출 정상 완료, 현재 파일과 반환 코드 동일. 승인할 변경 없음 |
 | `failed` | 변경안 생성 실패, 수신함에서 재시도 가능 |
 | `applied` | 사람이 승인하여 파일 반영 |
 | `rejected` | 제안 반려 |
@@ -71,7 +72,7 @@ GUI의 **에이전트 수신함**에서 작업을 선택해 생성/검토할 수
 - 수정 허용 경로 제한, 원본 SHA-256 확인, 명시적 사람 승인 절차는 두 진입 경로 모두 같습니다.
 - 원문/설정이 Claude Code의 구성된 AI 서비스로 전송될 수 있습니다. 인증 토큰을 URL/로그/문서에 남기지 마세요.
 
-## Live execution trace (v0.7)
+## 실행 기록 및 결과 구분 (v0.8)
 
 The GUI uses asynchronous jobs so users can inspect real CLI progress while a
 proposal is running. A handoff can use `POST /api/jobs/handoff` with `{"id":"..."}`
@@ -86,8 +87,10 @@ independent `X-AX-Agent-Token`.
 | `GET /api/jobs` | List recent in-memory jobs (localhost) |
 | `GET /api/jobs/{id}` | Poll status, phase, visible messages, errors, proposal ID |
 
-Jobs have `queued`, `running`, `complete`, or `failed` status and a distinct
-`phase`. Events distinguish submitted user instructions, CLI progress, visible
+Jobs have `queued`, `running`, `complete`, `no_change`, or `failed` status and a distinct
+`phase`, plus `cli_status` (`not_started`, `running`, `succeeded`, `failed`).
+`no_change`는 **CLI 호출 성공 후 원본과 수정 결과가 같은 경우**이며, 구조화된 `summary`, `rationale`, `risk`, `checks`와 대상 파일을 조회할 수 있지만 실제 코드 적용은 허용되지 않습니다.
+`failed`는 실행 오류·형식 오류 등으로 작업이 완료되지 못한 상태입니다. Events distinguish submitted user instructions, CLI progress, visible
 Claude Code structured response summaries, and errors. Raw source, raw CLI
 JSON, tool internals, and hidden reasoning are intentionally omitted from the
 conversation UI. The structured change proposal remains in the Diff/Review

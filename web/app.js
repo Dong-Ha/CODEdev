@@ -50,7 +50,7 @@ const SOURCE_LABELS = {
   freeform: "자유 요청", srs: "SRS", sdd: "SDD", jira: "Jira", verification: "검증 피드백",
 };
 const HANDOFF_LABELS = {
-  queued: "대기", generating: "생성 중", review: "검토 필요",
+  queued: "대기", generating: "생성 중", review: "검토 필요", no_change: "변경 없음",
   failed: "재시도 필요", applied: "반영 완료", rejected: "반려", undone: "되돌림",
 };
 
@@ -88,7 +88,7 @@ async function loadInbox() {
     const response = await request("/api/inbox");
     state.handoffs = response.tasks;
     const list = incomingForWorkspace();
-    $("inboxCount").textContent = String(list.filter(t => ["queued", "failed", "review"].includes(t.status)).length);
+    $("inboxCount").textContent = String(list.filter(t => ["queued", "failed", "review", "no_change"].includes(t.status)).length);
     root.replaceChildren();
     if (!list.length) {
       const empty = document.createElement("div"); empty.className = "inbox-empty";
@@ -137,7 +137,7 @@ function renderIncoming(task) {
   button.disabled = task.status === "generating";
   button.textContent = ["queued", "failed"].includes(task.status)
     ? task.status === "failed" ? "변경안 다시 생성" : "변경안 생성"
-    : task.proposal_id ? "변경안 검토하기" : "처리 중";
+    : task.proposal_id ? (task.status === "no_change" ? "응답 결과 확인하기" : "변경안 검토하기") : "처리 중";
 }
 
 async function openIncoming() {
@@ -156,7 +156,7 @@ async function openIncoming() {
       const response = await request("/api/jobs/handoff", {id: task.id});
       showRun(response.job, true);
       const done = await monitorRun(response.job.id);
-      if (done.status !== "complete") throw new Error(done.error || "Claude Code job failed");
+      if (!["complete", "no_change"].includes(done.status)) throw new Error(done.error || "Claude Code job failed");
       proposal = (await request("/api/proposal", {id: done.proposal_id})).proposal;
     } else if (task.proposal_id) {
       proposal = (await request("/api/proposal", {id: task.proposal_id})).proposal;
@@ -164,7 +164,8 @@ async function openIncoming() {
     } else throw new Error("This task is already running. Refresh the inbox.");
     state.proposal = proposal;
     changeTab("diff"); renderReview(); await loadHistory();
-    toast("Review the conversation, provenance and Diff before applying.", "success");
+    toast(proposal.status === "no_change" ? "Claude Code가 정상 응답했지만 코드 변경은 없습니다. 판단 근거를 확인하세요." :
+      "Review the conversation, provenance and Diff before applying.", proposal.status === "no_change" ? "info" : "success");
   } catch (error) {
     showRunError(error.message);
     toast(error.message, "error");
@@ -286,7 +287,8 @@ async function request(route, body) {
 }
 
 
-const RUN_STATE_LABELS = {queued:"대기",running:"진행 중",complete:"검토 대기",failed:"실패"};
+const RUN_STATE_LABELS = {queued:"대기",running:"진행 중",complete:"검토 대기",no_change:"변경 없음",failed:"실패"};
+const CLI_STATE_LABELS = {not_started:"Claude Code 호출 전",running:"Claude Code 호출 중",succeeded:"Claude Code 호출 성공",failed:"Claude Code 호출 실패"};
 const RUN_ROLE_LABELS = {user:"내 요청",assistant:"Claude Code 응답",system:"실행 기록",error:"오류"};
 
 function toggleRunConsole(open) {
@@ -302,6 +304,9 @@ function showSubmitting(prompt) {
   $("runMessages").replaceChildren();
   $("runStatus").textContent = "전송 중";
   $("runStatus").className = "run-status queued";
+  $("runCliStatus").className = "run-cli-status not_started";
+  $("runCliStatus").textContent = CLI_STATE_LABELS.not_started;
+  $("runTargetLabel").textContent = "대상 파일 확인 전";
   $("runSummary").textContent = "Sending task to local Code-Dev server...";
   $("runElapsed").textContent = "00:00";
   $("runIdLabel").textContent = "Awaiting job ID";
@@ -333,6 +338,10 @@ function showRun(job, expand = false) {
   state.lastRun = job;
   $("runStatus").className = `run-status ${job.status}`;
   $("runStatus").textContent = RUN_STATE_LABELS[job.status] || job.status;
+  const cli = job.cli_status || "not_started";
+  $("runCliStatus").className = `run-cli-status ${cli}`;
+  $("runCliStatus").textContent = CLI_STATE_LABELS[cli] || "Claude Code 상태 확인 중";
+  $("runTargetLabel").textContent = job.target ? `대상 파일: ${job.target}` : "대상 파일 확인 중";
   const secs = Math.max(0, Math.floor((Date.now() - Date.parse(job.created_at)) / 1000)) || 0;
   $("runElapsed").textContent = `${String(Math.floor(secs/60)).padStart(2,"0")}:${String(secs%60).padStart(2,"0")}`;
   $("runIdLabel").textContent = `Run ${job.id.slice(0,10)}`;
@@ -341,6 +350,7 @@ function showRun(job, expand = false) {
     running:"Preparing the request...",selecting:"Selecting a target from editable paths...",
     selected:"Target selection received.",generating:"Generating a code proposal...",
     responding:"Claude Code is responding...",review:"Response received. Review the Diff before applying.",
+    no_change:"Claude Code 호출 성공. 반환된 코드가 원본과 동일합니다. 판단 근거를 확인하고 필요하면 요청을 수정하세요.",
     applied:"Approved change applied to the workspace.",rejected:"Proposal rejected.",
     undone:"Source file restored.",failed:"Request failed. Review the error below and retry."
   };
@@ -384,7 +394,7 @@ async function monitorRun(id) {
       const {job} = await request(`/api/jobs/${encodeURIComponent(id)}`);
       showRun(job, true);
       failures = 0;
-      if (["complete","failed"].includes(job.status)) {
+      if (["complete","no_change","failed"].includes(job.status)) {
         state.activeRunId = "";
         return job;
       }
@@ -409,11 +419,14 @@ async function restoreLastRun() {
       setBusy(true,"Claude Code is working...");
       try {
         const done = await monitorRun(last.id);
-        if (done.status === "complete" && done.proposal_id) {
+        if (["complete", "no_change"].includes(done.status) && done.proposal_id) {
           state.proposal = (await request("/api/proposal", {id:done.proposal_id})).proposal;
           changeTab("diff"); renderReview(); await loadHistory();
         }
       } finally {setBusy(false);}
+    } else if (last.status === "no_change" && last.proposal_id && !state.proposal) {
+      state.proposal = (await request("/api/proposal", {id:last.proposal_id})).proposal;
+      changeTab("diff"); renderReview(); await loadHistory();
     }
   } catch(error) { toast(error.message,"error"); }
 }
@@ -524,6 +537,7 @@ function renderPlain(content) {
 }
 
 function renderDiff(diff) {
+  if (!diff.length) return showEmpty("변경 사항 없음", "Claude Code가 현재 파일과 동일한 코드를 반환했습니다.\n판단 근거를 확인하고 요청을 수정해 다시 생성하세요.");
   const wrap = document.createElement("div"); wrap.className = "diff-code";
   let oldLine = 0, newLine = 0;
   for (const change of diff) {
@@ -556,12 +570,13 @@ function setDiffHeader(proposal) {
   for (const [value, kind] of [[`+${proposal.plus}`, "plus"],[`-${proposal.minus}`, "minus"]]) {
     const pill = document.createElement("span"); pill.className = `stat-pill ${kind}`; pill.textContent = value; stats.appendChild(pill);
   }
-  const status = { review: "READY FOR REVIEW", applied: "APPLIED", rejected: "REJECTED", undone: "UNDONE" }[proposal.status] || "REVIEW";
+  const status = { review: "READY FOR REVIEW", no_change: "NO CHANGES", applied: "APPLIED", rejected: "REJECTED", undone: "UNDONE" }[proposal.status] || "REVIEW";
   $("fileStatus").textContent = `● ${status}`;
-  $("fileStatus").style.color = proposal.status === "applied" ? "#1caa78" : "#8b7ada";
+  $("fileStatus").style.color = proposal.status === "applied" ? "#1caa78" : proposal.status === "no_change" ? "#976413" : "#8b7ada";
   $("diffFooterMessage").textContent = proposal.status === "review" ? "검토 후 승인하거나 반려하세요" :
     proposal.status === "applied" ? "승인된 변경안이 파일에 반영되었습니다" :
-    proposal.status === "undone" ? "변경을 이전 내용으로 되돌렸습니다" : "제안을 반려했습니다. 파일을 수정하지 않았습니다";
+    proposal.status === "undone" ? "변경을 이전 내용으로 되돌렸습니다" :
+    proposal.status === "no_change" ? "Claude Code 호출 성공 · 원본 코드와 동일 · 파일 미수정" : "제안을 반려했습니다. 파일을 수정하지 않았습니다";
 }
 
 function renderPreview() {
@@ -603,6 +618,7 @@ function renderReview() {
   const hasDetails = Boolean(p);
   $("reviewStatus").classList.toggle("hidden", inReview);
   $("reviewContent").classList.toggle("hidden", !hasDetails);
+  $("retryRequestBtn").classList.toggle("hidden", !p || p.status !== "no_change");
   $("applyBtn").disabled = true;
   $("rejectBtn").disabled = !inReview || state.busy;
   $("undoBtn").disabled = !p || p.status !== "applied" || state.busy;
@@ -654,6 +670,7 @@ function renderReview() {
     setSteps(p.status === "applied" ? 4 : 3);
     $("reviewStatus").className = `review-status ${p.status}`;
     const messages = {
+      no_change: ["=", "Claude Code 정상 응답 · 변경 없음", "호출에는 성공했지만 현재 파일과 동일한 코드가 반환됐습니다. 아래 판단 근거를 확인한 뒤 요청을 수정하세요. 파일은 변경되지 않았습니다."],
       applied: ["✓", "파일 반영 완료", "승인된 내용을 실제 소스에 반영했습니다."],
       rejected: ["×", "제안 반려 완료", "원본 파일은 변경되지 않았습니다."],
       undone: ["↺", "파일 되돌리기 완료", "제안 적용 전 파일 내용으로 복원했습니다."]
@@ -692,16 +709,39 @@ async function generate() {
       source_kind, source_ref, source_content});
     showRun(job, true);
     const finished = await monitorRun(job.id);
-    if (finished.status !== "complete") throw new Error(finished.error || "Claude Code job failed");
+    if (!["complete", "no_change"].includes(finished.status)) throw new Error(finished.error || "Claude Code job failed");
     state.proposal = (await request("/api/proposal", {id: finished.proposal_id})).proposal;
     changeTab("diff"); renderReview(); await loadHistory();
-    toast(`Target: ${state.proposal.target}. Review the Diff before applying.`, "success");
+    toast(state.proposal.status === "no_change" ?
+      `Claude Code 호출 성공 · 변경 없음 (${state.proposal.target}). 응답 근거를 확인하세요.` :
+      `Target: ${state.proposal.target}. Review the Diff before applying.`,
+      state.proposal.status === "no_change" ? "info" : "success");
   } catch (err) {
     showRunError(err.message);
     toast(err.message, "error");
   } finally {
     setBusy(false);
   }
+}
+
+function retryNoChange() {
+  const p = state.proposal;
+  if (!p || p.status !== "no_change" || state.busy) return;
+  // This always creates a new human request; agent handoff provenance is not impersonated.
+  setRequestMode("human");
+  $("taskPrompt").value = p.prompt;
+  const option = [...$("targetFile").options].find(x => x.value === p.target);
+  if (option) {
+    $("targetFile").value = p.target;
+    state.target = p.target;
+  }
+  if (p.origin === "agent") {
+    $("requestKind").value = "freeform";
+    updateReferenceFields();
+  }
+  $("taskPrompt").focus();
+  $("taskPrompt").scrollIntoView({behavior: "smooth", block: "center"});
+  toast("기존 요청을 가져왔습니다. 변경 조건을 구체화한 뒤 다시 생성하세요.");
 }
 
 async function performAction(action) {
@@ -739,8 +779,8 @@ async function loadHistory() {
       none.textContent = "아직 실행한 변경 작업이 없습니다. 위에서 첫 요청을 생성해보세요.";
       root.appendChild(none); return;
     }
-    const icons = {review:"≠",applied:"✓",rejected:"×",undone:"↺"};
-    const names = {review:"REVIEW",applied:"APPLIED",rejected:"REJECTED",undone:"UNDONE"};
+    const icons = {review:"≠",no_change:"=",applied:"✓",rejected:"×",undone:"↺"};
+    const names = {review:"REVIEW",no_change:"NO CHANGES",applied:"APPLIED",rejected:"REJECTED",undone:"UNDONE"};
     for (const item of history) {
       const button = document.createElement("button"); button.type = "button";
       button.className = `history-row ${state.proposal && item.id === state.proposal.id ? "selected" : ""}`;
@@ -800,6 +840,7 @@ async function initialize() {
   $("runConsoleToggle").addEventListener("click", () => {
     toggleRunConsole($("runConsoleBody").classList.contains("hidden"));
   });
+  $("retryRequestBtn").addEventListener("click", retryNoChange);
   $("applyBtn").addEventListener("click", () => performAction("apply"));
   $("rejectBtn").addEventListener("click", () => performAction("reject"));
   $("undoBtn").addEventListener("click", () => performAction("undo"));

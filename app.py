@@ -477,7 +477,7 @@ def generate_handoff(ident: str, on_event=None, job_id: str = "") -> dict:
             raise
         raise
     with LOCK:
-        item["status"] = "review"
+        item["status"] = proposal["status"]
         item["proposal_id"] = proposal["id"]
         item["target"] = proposal["target"]
     return proposal
@@ -504,7 +504,7 @@ def create_handoff(raw: dict) -> dict:
             while time.monotonic() < deadline:
                 with LOCK:
                     status = JOBS.get(logged["id"], {}).get("status")
-                if status in {"complete", "failed"}:
+                if status in {"complete", "no_change", "failed"}:
                     break
                 time.sleep(0.04)
         except ApiError as exc:
@@ -568,6 +568,8 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
         finally:
             stream.close()
 
+    if on_event:
+        on_event("system", "Claude Code CLI 호출 중", "cli_running")
     try:
         with tempfile.TemporaryDirectory(prefix="ax-claude-") as scratch:
             process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -599,6 +601,9 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
         raise ApiError(f"Claude Code 실행 실패 (exit {returncode}). CLI 인증 상태를 'claude auth status'로 확인하세요.", 502)
     if not isinstance(last_result, dict):
         raise ApiError("Claude Code 응답에서 최종 결과를 찾지 못했습니다.", 422)
+    # Claude Code can report an unsuccessful result even when the process exits 0.
+    if last_result.get("is_error") is True:
+        raise ApiError("Claude Code가 작업 오류를 반환했습니다. 인증 및 요청 내용을 확인하세요.", 502)
     result = last_result.get("structured_output")
     if not isinstance(result, dict):
         raw = last_result.get("result")
@@ -608,6 +613,8 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
             result = None
     if not isinstance(result, dict):
         raise ApiError("Claude Code가 유효한 JSON 변경안을 반환하지 않았습니다.", 422)
+    if on_event:
+        on_event("system", "Claude Code 호출 성공 · 정상 종료 및 구조화 응답 확인", "cli_succeeded")
     return result
 
 
@@ -682,20 +689,20 @@ def validate_result(result: dict, original: str) -> tuple[str, str, str, list[st
         raise ApiError("생성된 코드가 유효한 텍스트가 아닙니다.", 422)
     if len(revised.encode("utf-8")) > MAX_FILE_BYTES:
         raise ApiError("생성된 파일이 64KB 크기 제한을 초과합니다.", 422)
-    if revised == original:
-        raise ApiError("모델이 변경 사항을 생성하지 않았습니다. 요청을 구체화해 다시 시도하세요.", 422)
-    def clipped(v: object, fallback: str) -> str:
-        return str(v)[:320] if isinstance(v, str) and v.strip() else fallback
+    # An unchanged response is a valid, successfully completed Claude call.
+    # Its rationale must remain visible so users can decide what to do next.
+    def clipped(v: object, fallback: str, limit: int = 320) -> str:
+        return str(v).strip()[:limit] if isinstance(v, str) and v.strip() else fallback
     raw_checks = result.get("checks")
     checks = [str(s)[:160] for s in raw_checks[:6] if isinstance(s, str)] if isinstance(raw_checks, list) else []
-    return (clipped(result.get("summary"), "코드 변경안"),
-            clipped(result.get("rationale"), "변경 내용을 검토하세요."),
+    return (clipped(result.get("summary"), "Claude Code 응답"),
+            clipped(result.get("rationale"), "Claude Code가 변경 판단 이유를 제공하지 않았습니다.", 850),
             clipped(result.get("risk"), "검토 필요 (모델 자체 평가)"),
             checks or ["Diff 전체 확인", "변경 적용 후 수동 검증 필요"], revised)
 
 
 def to_public(p: dict, full: bool = False) -> dict:
-    public = {k: p[k] for k in ("id", "job_id", "workspace", "target", "target_selection", "engine", "prompt",
+    public = {k: p[k] for k in ("id", "job_id", "workspace", "target", "target_selection", "code_changed", "engine", "prompt",
                                  "summary", "rationale", "risk", "checks", "plus", "minus",
                                  "status", "created_at", "activity", "origin", "handoff_id", "source_kind",
                                  "source_ref", "source_content", "source_agent", "upstream_run_id")}
@@ -727,27 +734,35 @@ def propose(body: dict, handoff_id: str = "", on_event=None, job_id: str = "") -
     file = resolve_target(root, target)
     target = file.relative_to(root).as_posix()
     require_editable(root, target, profile)
+    if job_id:
+        with LOCK:
+            job = JOBS.get(job_id)
+            if job:
+                job["target"] = target
+    if on_event:
+        method = "직접 지정" if raw_target.strip() else "허용 범위에서 자동 선택"
+        on_event("system", f"수정 대상 파일: {target} ({method})", "selected")
     original = read_utf8(file)
     result = call_claude(prompt, target, original, profile, meta, on_event=on_event)
     summary, rationale, risk, checks, revised = validate_result(result, original)
-    diff, plus, minus = create_diff(str(target), original, revised)
+    # Always record Claude's actual structured explanation, even with zero diff.
     if on_event:
-        rationale = str(rationale)[:700]
-        risk = str(risk)[:300]
-        checks_note = "; ".join(str(x) for x in checks[:4])[:380]
-        on_event("assistant", f"Summary: {summary}\nExplanation: {rationale}\nRisk: {risk}\nChecks: {checks_note}", "review")
-    if not plus and not minus:
-        raise ApiError("공백이나 줄바꿈을 포함한 실제 변경이 없습니다.", 422)
+        checks_note = "; ".join(str(x) for x in checks[:4])[:350]
+        on_event("assistant", f"Summary: {summary}\nExplanation: {rationale}\nRisk: {risk}\nChecks: {checks_note}", "responding")
+    diff, plus, minus = create_diff(str(target), original, revised)
+    changed = bool(plus or minus)
+    status = "review" if changed else "no_change"
     p = {"id": secrets.token_hex(5), "job_id": job_id, "workspace": str(root), "target": str(target),
-         "target_selection": "manual" if raw_target.strip() else "auto",
+         "target_selection": "manual" if raw_target.strip() else "auto", "code_changed": changed,
          "config_revision": profile["revision"],
          "engine": "claude", "prompt": prompt.strip(), "summary": summary,
          "origin": "agent" if handoff_id else "human", "handoff_id": handoff_id, **meta,
          "rationale": rationale, "risk": risk, "checks": checks, "plus": plus, "minus": minus,
-         "status": "review", "created_at": timestamp(), "original": original,
+         "status": status, "created_at": timestamp(), "original": original,
          "original_hash": sha(original), "new_content": revised, "new_hash": sha(revised),
          "diff": diff, "activity": []}
-    add_activity(p, "변경 제안 생성 · 실제 파일 미수정")
+    add_activity(p, "변경 제안 생성 · 실제 파일 미수정" if changed else
+                 "Claude Code 정상 응답 · 코드 변경 없음 · 실제 파일 미수정")
     add_activity(p, f"변경 범위 분석 · +{plus} / -{minus} 라인")
     with LOCK:
         PROPOSALS[p["id"]] = p
@@ -755,7 +770,10 @@ def propose(body: dict, handoff_id: str = "", on_event=None, job_id: str = "") -
         while len(RECENT) > MAX_HISTORY:
             PROPOSALS.pop(RECENT.pop(), None)
     if on_event:
-        on_event("system", f"Diff ready: {target}, +{plus}/-{minus}. No source files changed.", "review")
+        if changed:
+            on_event("system", f"Diff ready: {target}, +{plus}/-{minus}. No source files changed.", "review")
+        else:
+            on_event("system", f"Claude Code 응답 정상 · {target}의 변경 사항 없음. 위 설명을 확인하고 요청을 다시 작성하세요. 원본 파일 유지.", "no_change")
     return to_public(p, True)
 
 
@@ -816,7 +834,7 @@ def change_status(body: dict, action: str) -> dict:
 
 def public_job(job: dict) -> dict:
     return {key: job[key] for key in ("id", "workspace", "origin", "handoff_id",
-            "prompt", "status", "phase", "target", "proposal_id", "error",
+            "prompt", "status", "cli_status", "phase", "target", "proposal_id", "error",
             "created_at", "updated_at", "events")}
 
 
@@ -871,7 +889,7 @@ def start_job(kind: str, body: dict) -> dict:
         ident = secrets.token_hex(10)
         job = {"id": ident, "workspace": workspace, "origin": origin,
                "handoff_id": handoff_id, "prompt": prompt.strip(), "target": target,
-               "status": "queued", "phase": "queued", "proposal_id": "", "error": "",
+               "status": "queued", "cli_status": "not_started", "phase": "queued", "proposal_id": "", "error": "",
                "created_at": timestamp(), "updated_at": timestamp(),
                "events": [], "next_seq": 1}
         JOBS[ident] = job
@@ -895,7 +913,14 @@ def run_job(ident: str, kind: str, body: dict) -> None:
         if ident not in JOBS:
             return
         JOBS[ident]["status"] = "running"
-    callback = lambda role, message, phase=None: job_event(ident, role, message, phase)
+    def callback(role, message, phase=None):
+        if phase in {"cli_running", "cli_succeeded"}:
+            with LOCK:
+                job = JOBS.get(ident)
+                if job:
+                    job["cli_status"] = "running" if phase == "cli_running" else "succeeded"
+            phase = "generating" if phase == "cli_running" else "responding"
+        job_event(ident, role, message, phase)
     try:
         if kind == "handoff":
             proposal = generate_handoff(body["id"], on_event=callback, job_id=ident)
@@ -906,14 +931,19 @@ def run_job(ident: str, kind: str, body: dict) -> None:
             if job:
                 job["proposal_id"] = proposal["id"]
                 job["target"] = proposal["target"]
-                job["status"] = "complete"
-        job_event(ident, "system", "Proposal ready for your review; source remains unchanged", "review")
+                job["status"] = "no_change" if proposal["status"] == "no_change" else "complete"
+        if proposal["status"] == "no_change":
+            job_event(ident, "system", "Claude Code 호출 성공 · 코드 변경 없음. 판단 근거를 확인하고 필요하면 요청을 수정하세요.", "no_change")
+        else:
+            job_event(ident, "system", "Proposal ready for your review; source remains unchanged", "review")
     except Exception as exc:
         message = str(exc) if isinstance(exc, ApiError) else "Internal job error; check server console"
         with LOCK:
             job = JOBS.get(ident)
             if job:
                 job["status"] = "failed"
+                if job["cli_status"] == "running":
+                    job["cli_status"] = "failed"
                 job["error"] = message
         job_event(ident, "error", message, "failed")
         if not isinstance(exc, ApiError):
@@ -925,7 +955,7 @@ Handler = build_handler(globals())
 
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev GUI MVP 0.7.0")
+    print("AX Code-Dev GUI MVP 0.8.0")
     print(f"Open: http://{HOST}:{PORT}")
     print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")

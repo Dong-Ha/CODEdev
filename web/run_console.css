@@ -5,6 +5,11 @@
 .run-status{font-size:10px;font-weight:800;border-radius:100px;padding:7px 11px;color:#626e85;background:#f1f3f9;border:1px solid #e8ebf2}
 .run-status.running,.run-status.queued{color:#6b58b1;background:#f2efff;border-color:#e0dafd}
 .run-status.complete{color:#137952;background:#ebfaf2;border-color:#ccebd9}
+.run-status.no_change{color:#8a5d17;background:#fff6e9;border-color:#efdfbd}
+.run-cli-status{font-size:10px;border-radius:6px;padding:6px 9px;border:1px solid #e5eaf2;color:#68768e;background:#f7f9fc;font-weight:650}
+.run-cli-status.running{color:#6653a3;background:#f2efff;border-color:#ddd8f5}
+.run-cli-status.succeeded{color:#176b4c;background:#e9f8f0;border-color:#ccead9}
+.run-cli-status.failed{color:#a23c53;background:#fff0f3;border-color:#efd9e0}
 .run-status.failed{color:#a33f54;background:#fff0f2;border-color:#f3d8dd}
 .run-elapsed{font:11px/1 ui-monospace,Consolas,monospace;color:#8994a8;min-width:38px;text-align:right}
 .run-toggle{min-width:88px}
@@ -27,5 +32,13 @@
 .run-message.error p{color:#943d54}
 .run-console-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px 13px;border-top:1px solid #edf0f6;color:#8995a8;font-size:10px;line-height:1.6}
 .run-id{font-family:ui-monospace,Consolas,monospace;white-space:nowrap;color:#a2acc0}
+.run-target{overflow-wrap:anywhere;color:#68778e;flex:1;min-width:0}
+.run-console-footer>span:first-child{flex:1}
+.review-status.no_change{background:#fffbf2;border-color:#f1e2c6;height:auto;min-height:146px}
+.review-status.no_change .review-status-icon{background:#ffefd3;color:#926725}
+.retry-request{width:100%;margin-bottom:10px;min-height:38px;color:#7257a7;border:1px solid #d9d0ed;background:#faf8ff}
+.retry-request:hover{background:#f1eafe}
+.history-status.no_change,.history-icon.no_change{background:#fff5e4;color:#895e24}
+.inbox-task-status.no_change{background:#fff5e4;color:#895e24}
 @media(max-width:650px){.run-console-header{align-items:flex-start}.run-header-actions{width:100%;justify-content:flex-end}.run-summary{padding:12px 14px}.run-messages{padding:12px;max-height:360px}.run-console-footer{flex-direction:column;align-items:flex-start}.run-id{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){.conversation-panel *{scroll-behavior:auto}}
