@@ -30,11 +30,19 @@ WEB = BASE / "web"
 SAMPLE = BASE / "sample_workspace"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("AX_PORT", "8765"))
-MAX_FILE_BYTES = 64 * 1024
+# Source inventory is governed by explicit path patterns, never file size.
+# Edit generation uses full-file output for small files and exact patch spans
+# for larger sources. The upper bound is an explicit processing limit, not a
+# reason to remove a matching file from the inventory.
+MAX_FILE_BYTES = 64 * 1024  # Full-file Claude output threshold only.
+MAX_EDIT_SOURCE_BYTES = 8 * 1024 * 1024
+MAX_PATCH_CONTEXT_BYTES = 256 * 1024
+MAX_PATCH_EDITS = 24
+MAX_PATCH_REPLACEMENT_BYTES = 128 * 1024
 MAX_REQUEST_BYTES = 48 * 1024
 MAX_HANDOFFS = 80
 AGENT_TOKEN = os.environ.get("AX_AGENT_TOKEN", "")
-MAX_FILES = 1500
+MAX_FILES = 10000  # Explicit scan-budget warning if exceeded; never silently filter.
 MAX_SCAN_FILES = 120000
 MAX_SCAN_DIRS = 40000
 MAX_SCAN_DEPTH = 32
@@ -281,8 +289,10 @@ def sha(s: str) -> str:
 
 
 def read_utf8(path: Path) -> str:
-    if path.stat().st_size > MAX_FILE_BYTES:
-        raise ApiError(f"파일이 {MAX_FILE_BYTES // 1024}KB 제한을 초과합니다.")
+    # Discovery always includes matched files. Only an actual edit/read
+    # request can be rejected by the host-side processing limit.
+    if path.stat().st_size > MAX_EDIT_SOURCE_BYTES:
+        raise ApiError(f"선택된 파일이 처리 한도({MAX_EDIT_SOURCE_BYTES // (1024 * 1024)}MB)를 초과합니다. 수정 권한 목록에는 계속 표시됩니다.", 422)
     if not path.is_file():
         raise ApiError("일반 파일만 수정할 수 있습니다.")
     try:
@@ -369,7 +379,9 @@ def scan_workspace(root: Path, profile: dict | None) -> dict:
 
     def consider(file_path: Path) -> bool:
         """Return False when a budget is exceeded and scanning must stop."""
-        if file_path.name.startswith(".") or file_path.suffix.lower() not in EXTENSIONS:
+        # Path patterns define inventory membership; extension and size do not.
+        # Dotfiles are kept outside the text-edit surface for safety.
+        if file_path.name.startswith("."):
             return True
         if file_path.is_symlink():
             return True
@@ -385,7 +397,7 @@ def scan_workspace(root: Path, profile: dict | None) -> dict:
             details = file_path.stat()
         except OSError:
             return True
-        if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_FILE_BYTES:
+        if not stat.S_ISREG(details.st_mode):
             return True
         if not any(glob_matches(p, relative) for p in includes):
             return True
@@ -442,8 +454,10 @@ def resolve_target(root: Path, target: object) -> Path:
     p = Path(target)
     if p.is_absolute() or ".." in p.parts or any(piece.startswith(".") for piece in p.parts):
         raise ApiError("프로젝트 내부의 상대 경로만 허용됩니다.")
-    if p.suffix.lower() not in EXTENSIONS or any(part in SKIP_DIRS for part in p.parts):
+    if any(part in SKIP_DIRS for part in p.parts):
         raise ApiError("지원하지 않는 파일 경로입니다.")
+    # Extension is not an edit-authorization mechanism. A selected file must
+    # still pass the UTF-8/text-only check in read_utf8().
     current = root
     for part in p.parts:
         current = current / part
@@ -501,6 +515,26 @@ CLAUDE_RESULT_SCHEMA = {
     "required": ["summary", "rationale", "risk", "checks", "new_content"],
     "additionalProperties": False,
 }
+
+# Large source changes are expressed as exact, unique replacements rather
+# than returning a multi-hundred-KB complete source file from the model.
+CLAUDE_PATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "rationale": {"type": "string"},
+        "risk": {"type": "string"},
+        "checks": {"type": "array", "items": {"type": "string"}},
+        "edits": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"old_string": {"type": "string"}, "new_string": {"type": "string"}},
+            "required": ["old_string", "new_string"], "additionalProperties": False,
+        }},
+    },
+    "required": ["summary", "rationale", "risk", "checks", "edits"],
+    "additionalProperties": False,
+}
+
 
 # Selection sees only the allowlisted file paths, not the files' source contents.
 CLAUDE_TARGET_SCHEMA = {
@@ -712,8 +746,11 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
     if on_event:
         # Show the actual task instruction sent to the CLI without repeating
         # full source files or a long manifest in the visible conversation.
-        public_task = task.split("File contents START\n", 1)[0]
-        public_task = public_task.split("Allowlisted relative paths (filenames only; no source contents yet):\n", 1)[0]
+        public_task = task
+        for delimiter in ("Allowlisted relative paths (filenames only; no source contents yet):",
+                          "Other selected code context", "Reference context START",
+                          "File contents START"):
+            public_task = public_task.split(delimiter, 1)[0]
         public_task = public_task.split("Reference context START", 1)[0]
         public_task = public_task.split("Other selected code context (read-only):", 1)[0]
         if len(public_task) > 1400:
@@ -840,28 +877,41 @@ def choose_targets(root: Path, prompt: str, profile: dict, context: dict,
             on_event("system", f"허용 범위의 유일한 파일: {paths[0]}", "selecting")
         return {"targets": paths, "reason": "허용된 파일이 하나이므로 해당 파일을 검토합니다.", "question": ""}
 
-    # Avoid another global file count dependency. Rank a large candidate pool
-    # by task terms and filename segments, then present the best-scoring paths
-    # to Claude; do not pretend the reduced list is the complete workspace.
+    # Every matched path is considered by Claude. Large allowlists are sent in
+    # batches, *not* reduced by filename keyword ranking (which failed on
+    # Korean-only instructions and silently dropped eligible paths).
     if len(paths) > MAX_AUTO_TARGET_FILES:
-        terms = set(re.findall(r"[A-Za-z0-9_]{3,}", prompt.lower()))
-        def relevance(path):
-            lower = path.lower()
-            stem = Path(path).stem.lower()
-            tokens = re.findall(r"[a-z0-9]{3,}", lower)
-            return (sum(6 if term == stem else 3 if term in tokens else 1
-                        for term in terms if term in lower),
-                    -len(path))
-        scored = sorted(paths, key=lambda path: (-relevance(path)[0], -relevance(path)[1], path))
-        if relevance(scored[0])[0] == 0:
-            # No grounded way to select from a broad source tree, so ask
-            # about the component/function in ordinary conversational terms.
-            return {"targets": [], "reason": "허용 범위가 넓고 요청에서 관련 모듈을 구분할 근거가 부족합니다.",
-                    "question": "수정하려는 기능, 드라이버 또는 함수 이름을 조금 더 설명해 주세요."}
-        paths = scored[:MAX_AUTO_TARGET_FILES]
         if on_event:
-            on_event("system", f"허용 파일 {len(candidates)}개 중 요청과 관련된 후보 {len(paths)}개를 탐색합니다.", "selecting")
+            on_event("system", f"수정 허용 파일 {len(paths)}개 전부를 {MAX_AUTO_TARGET_FILES}개 단위로 나눠 Claude Code에 전달합니다.", "selecting")
+        selected = []
+        questions = []
+        reasons = []
+        for offset in range(0, len(paths), MAX_AUTO_TARGET_FILES):
+            batch = paths[offset:offset + MAX_AUTO_TARGET_FILES]
+            response = choose_targets_from_manifest(prompt, profile, context, batch, on_event)
+            selected.extend(response["targets"])
+            if response["question"]:
+                questions.append(response["question"])
+            if response["reason"]:
+                reasons.append(response["reason"])
+        # Each path was delivered to Claude once; only model-selected matches
+        # proceed to the final arbitration round.
+        finalists = list(dict.fromkeys(selected))
+        if not finalists:
+            question = questions[0] if questions else "수정하려는 기능이나 드라이버 동작을 조금 더 구체적으로 알려주세요."
+            return {"targets": [], "reason": "; ".join(reasons)[:800], "question": question}
+        if len(finalists) > MAX_FILES_PER_PROPOSAL:
+            return choose_targets_from_manifest(prompt, profile, context, finalists, on_event)
+        if on_event:
+            on_event("system", "전체 파일 목록 검사 후 관련 파일: " + ", ".join(finalists), "selected")
+        return {"targets": finalists, "reason": "; ".join(reasons)[:800], "question": ""}
 
+    return choose_targets_from_manifest(prompt, profile, context, paths, on_event)
+
+
+def choose_targets_from_manifest(prompt: str, profile: dict, context: dict,
+                                 paths: list[str], on_event=None) -> dict:
+    """Ask Claude to select 0-3 exact paths from a complete manifest batch."""
     task = (task_context(prompt, profile, context)
             + "Choose the existing source files required to implement this request. "
             + f"Select up to {MAX_FILES_PER_PROPOSAL} paths, only if their filenames and task "
@@ -1027,6 +1077,78 @@ def discover_readonly_references(root: Path, targets: dict[str, str],
     return references
 
 
+def patch_source_context(original: str, prompt: str) -> str:
+    """Bound large-file model input; do not alter the editable file itself.
+
+    256KiB covers typical driver sources in full. Beyond that include the
+    header plus keyword-matched windows, using original text (no rewriting).
+    If too little relevant context is available the model must return no edits.
+    """
+    if len(original.encode("utf-8")) <= MAX_PATCH_CONTEXT_BYTES:
+        return original
+    lines = original.splitlines(keepends=True)
+    terms = {t.lower() for t in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{3,}", prompt)}
+    terms = {t for t in terms if t not in {"please", "change", "update", "function", "driver", "source", "linux"}}
+    window_indexes = set(range(min(140, len(lines))))
+    hits = [i for i, line in enumerate(lines) if any(t in line.lower() for t in terms)]
+    if not hits:
+        # At least show a balanced sample of the source rather than pretending
+        # the file was completely inspected by Claude.
+        step = max(1, len(lines) // 32)
+        hits = list(range(0, len(lines), step))
+    for i in hits[:80]:
+        window_indexes.update(range(max(0, i - 12), min(len(lines), i + 24)))
+    remaining = MAX_PATCH_CONTEXT_BYTES - 5000
+    output = [f"[LARGE FILE: {len(lines)} lines. Selected excerpts; omitted lines are unchanged.]\n"]
+    previous = -2
+    for i in sorted(window_indexes):
+        chunk = f"{i + 1}: {lines[i]}"
+        chunk_bytes = len(chunk.encode("utf-8"))
+        if chunk_bytes > remaining:
+            break
+        if i > previous + 1:
+            output.append("[... omitted unchanged lines ...]\n")
+        output.append(chunk)
+        remaining -= chunk_bytes
+        previous = i
+    return "".join(output)
+
+
+def apply_exact_edits(original: str, edits: object) -> str:
+    """Apply unambiguous non-overlapping model patches to an in-memory copy.
+
+    No filesystem mutation happens until the user's explicit approval.
+    """
+    if not isinstance(edits, list) or len(edits) > MAX_PATCH_EDITS:
+        raise ApiError(f"대형 파일 변경 구간은 최대 {MAX_PATCH_EDITS}개여야 합니다.", 422)
+    located = []
+    for entry in edits:
+        if not isinstance(entry, dict) or set(entry) != {"old_string", "new_string"}:
+            raise ApiError("Claude Code의 대형 파일 변경 구간 형식이 올바르지 않습니다.", 422)
+        before, after = entry["old_string"], entry["new_string"]
+        if not isinstance(before, str) or not isinstance(after, str) or not before:
+            raise ApiError("변경 구간의 원본 텍스트가 누락됐습니다.", 422)
+        if (len(before.encode("utf-8")) > MAX_PATCH_REPLACEMENT_BYTES or
+                len(after.encode("utf-8")) > MAX_PATCH_REPLACEMENT_BYTES or "\x00" in after):
+            raise ApiError("변경 구간이 너무 크거나 바이너리를 포함합니다.", 422)
+        if before == after:
+            continue
+        offset = original.find(before)
+        if offset < 0 or original.find(before, offset + 1) >= 0:
+            raise ApiError("대형 파일 변경 구간의 원본이 정확히 한 번 존재하지 않습니다. 파일은 변경되지 않았습니다.", 422)
+        located.append((offset, offset + len(before), after))
+    located.sort()
+    for earlier, later in zip(located, located[1:]):
+        if earlier[1] > later[0]:
+            raise ApiError("대형 파일 변경 구간이 서로 겹칩니다. 파일은 변경되지 않았습니다.", 422)
+    revised = original
+    for start, end, replacement in reversed(located):
+        revised = revised[:start] + replacement + revised[end:]
+    if len(revised.encode("utf-8")) > MAX_EDIT_SOURCE_BYTES:
+        raise ApiError("수정된 파일이 처리 가능한 크기를 초과합니다.", 422)
+    return revised
+
+
 def call_claude(prompt: str, target: str, original: str, profile: dict,
                 context: dict | None = None, on_event=None, related: dict | None = None,
                 references: dict[str, str] | None = None) -> dict:
@@ -1042,16 +1164,36 @@ def call_claude(prompt: str, target: str, original: str, profile: dict,
         reference_context = '\n'.join(
             f'Reference source: {path} (READ ONLY; do not edit)\n{excerpt}'
             for path, excerpt in references.items())
+    large = len(original.encode("utf-8")) > MAX_FILE_BYTES
+    if large:
+        source_context = patch_source_context(original, prompt)
+        instructions = ("This large file is editable, but use exact text replacements instead of reprinting it. "
+                        "Return edits=[{old_string, new_string}]. Each old_string MUST be copied verbatim "
+                        "from supplied source and occur exactly once. Do not include line numbers in old_string. "
+                        "No filesystem writes. If the change cannot be made safely from provided excerpts, "
+                        "return edits=[] and explain the missing context in rationale.")
+        source_label = "File contents START (large-file excerpts; may not be exhaustive)"
+        schema = CLAUDE_PATCH_SCHEMA
+    else:
+        source_context = original
+        instructions = "Return a complete revised file in new_content; do not modify files."
+        source_label = "File contents START"
+        schema = CLAUDE_RESULT_SCHEMA
     task = (task_context(prompt, profile, context)
             + f"Target path: {target}\n"
             + f"Other selected code context (read-only):\n{other_context}\n"
             + f"Reference context START (Project Root read-only; NEVER modify these files):\n{reference_context}\nReference context END\n"
-            + f"File contents START\n{original}\nFile contents END\n"
-            + "Return a complete revised file in new_content; do not modify files.")
+            + f"{source_label}\n{source_context}\nFile contents END\n"
+            + instructions)
     if on_event:
-        on_event("system", f"Generating change proposal for {target}", "generating")
-    result = run_claude_task(task, CLAUDE_RESULT_SCHEMA, on_event=on_event)
-    if not isinstance(result.get("new_content"), str):
+        on_event("system", f"Generating change proposal for {target}" +
+                 (" (대형 파일: 구간 교체 방식)" if large else ""), "generating")
+    result = run_claude_task(task, schema, on_event=on_event)
+    if large:
+        # Host applies exact replacements to an in-memory copy. The returned
+        # complete content enters the same diff, SHA guard and approval gate.
+        result["new_content"] = apply_exact_edits(original, result.get("edits"))
+    elif not isinstance(result.get("new_content"), str):
         raise ApiError("Claude Code 출력에 전체 파일 내용(new_content)이 없습니다.", 422)
     return result
 
@@ -1060,8 +1202,8 @@ def validate_result(result: dict, original: str) -> tuple[str, str, str, list[st
     revised = result.get("new_content")
     if not isinstance(revised, str) or not revised or "\x00" in revised:
         raise ApiError("생성된 코드가 유효한 텍스트가 아닙니다.", 422)
-    if len(revised.encode("utf-8")) > MAX_FILE_BYTES:
-        raise ApiError("생성된 파일이 64KB 크기 제한을 초과합니다.", 422)
+    if len(revised.encode("utf-8")) > MAX_EDIT_SOURCE_BYTES:
+        raise ApiError("수정된 파일이 처리 가능한 크기를 초과합니다.", 422)
     # An unchanged response is a valid, successfully completed Claude call.
     # Its rationale must remain visible so users can decide what to do next.
     def clipped(v: object, fallback: str, limit: int = 320) -> str:
