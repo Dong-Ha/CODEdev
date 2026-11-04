@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 def build_handler(context: dict):
     class Handler (BaseHTTPRequestHandler ):
-        server_version ="AXCodeDevMVP/1.1"
+        server_version ="AXCodeDevMVP/1.4"
         def _headers (self ,status :int ,mime :str ="application/json; charset=utf-8",length :int =0 ):
             self .send_response (status )
             self .send_header ("Content-Type",mime )
@@ -52,8 +52,8 @@ def build_handler(context: dict):
                 return self ._json (200 ,{"ok":True ,"token":context['CSRF'] ,"sample_path":str (context['SAMPLE'] .resolve ()),
                 "last_workspace":store .get ("last_workspace",""),
                 "config_file":str (context['CONFIG_FILE'] ),
-                "version":"1.1.0","agent_intake_enabled":bool (context['AGENT_TOKEN'] ),
-                "limitations":{"max_file_kb":64 }})
+                "version":"1.4.0","agent_intake_enabled":bool (context['AGENT_TOKEN'] ),
+                "limitations":{"max_full_file_output_kb":64,"max_edit_source_mb":8,"large_file_patch":True }})
             if route =="/api/claude/status":
                 return self ._json (200 ,{"ok":True ,**context['claude_status'] ()})
             if route =="/api/jobs":
