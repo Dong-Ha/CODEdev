@@ -121,9 +121,9 @@
               <div class="hint-row"><span><span class="sparkle">✧</span> 구체적인 변경 조건을 입력하세요</span><button class="text-link" type="button" id="fillSamplePrompt">예시 불러오기</button></div>
 
               <div class="divider-soft"></div>
-              <label for="targetFile" class="field-label">TARGET FILE <span class="field-required">*</span></label>
-              <div class="select-wrapper"><select id="targetFile"><option value="">워크스페이스를 먼저 연결하세요</option></select><span class="select-arrow">⌄</span></div>
-              <div class="field-caption">MVP는 한 번에 파일 1개만 변경합니다.</div>
+              <label for="targetFile" class="field-label">Target File <span class="optional-tag">선택</span></label>
+              <div class="select-wrapper"><select id="targetFile"><option value="">환경 설정 후 자동 선택</option></select><span class="select-arrow">⌄</span></div>
+              <p class="field-caption">비워두면 Claude Code가 개발 환경의 수정 허용 파일에서 대상을 찾습니다. 직접 지정하면 해당 파일만 검토합니다. 한 번에 파일 1개만 변경합니다.</p>
 
               <div class="divider-soft"></div>
               <div class="field-label">CODE GENERATION · CLAUDE CODE ONLY</div>

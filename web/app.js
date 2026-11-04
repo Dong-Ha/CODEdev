@@ -123,7 +123,7 @@ function renderIncoming(task) {
   $("incomingTitle").textContent = `${SOURCE_LABELS[task.source_kind] || task.source_kind} · ${HANDOFF_LABELS[task.status] || task.status}`;
   $("incomingMeta").textContent = `${task.source_agent} · ${task.upstream_run_id || "상위 실행 ID 없음"}`;
   $("incomingInstruction").textContent = task.instruction;
-  $("incomingTarget").textContent = task.target;
+  $("incomingTarget").textContent = task.target || "자동 선택 · 수정 허용 파일";
   $("incomingReference").textContent = task.source_ref || "참조 ID 없음";
   $("incomingSourceDetails").classList.toggle("hidden", !task.source_content);
   $("incomingSourceContent").textContent = task.source_content || "";
@@ -325,11 +325,10 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
     $("fileCount").textContent = String(data.files.length);
     const select = $("targetFile");
     select.replaceChildren();
-    if (!data.files.length) select.add(new Option("지원하는 텍스트 소스 파일 없음", ""));
+    select.add(new Option(data.configured ? "자동 선택 · 수정 허용 범위에서 찾기" : "환경 설정 후 자동 선택", ""));
     for (const file of data.files) select.add(new Option(file.path, file.path));
-    const favored = data.files.find(f => f.path === "drivers/power/supply/ax_ifpmic_charger.c");
-    if (favored) select.value = favored.path;
-    state.target = select.value;
+    select.value = "";
+    state.target = "";
     $("generateBtn").disabled = !state.configured || state.busy;
     renderReview();
     renderPreview();
@@ -345,13 +344,13 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
 }
 
 function updateFileLabel(file) {
-  const name = file || "No file selected";
+  const name = file || "자동 선택 대기 · 수정 허용 파일";
   $("filePathLabel").textContent = name;
-  const ext = name.includes(".") ? name.split(".").pop().toUpperCase() : "—";
+  const ext = file && file.includes(".") ? file.split(".").pop().toUpperCase() : "—";
   $("fileLang").textContent = ext;
 }
 
-function showEmpty(message = "새로운 변경을 시작하세요", subtext = "왼쪽에서 요청과 대상 파일을 선택하면\n에이전트의 변경안을 여기에서 비교할 수 있습니다.") {
+function showEmpty(message = "새로운 변경을 시작하세요", subtext = "요청을 작성하고 변경안을 생성하세요.\n파일을 지정하지 않으면 허용 범위에서 자동으로 선택합니다.") {
   const container = $("diffBody");
   container.replaceChildren();
   const wrap = document.createElement("div"); wrap.className = "empty-diff";
@@ -435,7 +434,7 @@ function renderPreview() {
     else showEmpty();
     return;
   }
-  if (!state.target || !state.workspace) return showEmpty();
+  if (!state.target || !state.workspace) return showEmpty("파일 자동 선택 대기", "변경안을 생성하면 Claude Code가 수정 허용 파일 중 대상을 선정합니다.");
   // Before proposal generation Original/Revised both show read-only source.
   request("/api/file", { workspace: state.workspace, target: state.target })
     .then(data => { if (!state.proposal) renderPlain(data.content); })
@@ -474,7 +473,9 @@ function renderReview() {
   const label = document.createElement("strong");
   label.textContent = byAgent ? `에이전트 인계 · ${p.source_agent}` : "직접 요청";
   const detail = document.createElement("span");
-  detail.textContent = [kind, p.source_ref, p.upstream_run_id].filter(Boolean).join(" · ");
+  detail.textContent = [kind, p.source_ref, p.upstream_run_id,
+    `${p.target_selection === "auto" ? "자동 선택" : "직접 지정"}: ${p.target}`]
+    .filter(Boolean).join(" · ");
   provenance.append(label, detail);
   $("proposalSummary").textContent = p.summary;
   $("proposalRationale").textContent = p.rationale;
@@ -529,13 +530,13 @@ async function generate() {
   const source_kind = $("requestKind").value;
   const source_ref = $("requestRef").value.trim();
   const source_content = $("requestContent").value.trim();
-  if (!target) { $("targetFile").focus(); return toast("수정 대상 파일을 선택하세요.", "error"); }
+  if (!state.files.length) return toast("수정 허용 파일이 없습니다. 개발 환경에서 허용 경로를 확인하세요.", "error");
   if (source_kind !== "freeform" && source_content.length < 10) {
     $("requestContent").focus();
     return toast("명세 또는 이슈 본문을 10자 이상 붙여넣으세요. 링크만으로는 내용을 가져올 수 없습니다.", "error");
   }
   if (prompt.length < 5) { $("taskPrompt").focus(); return toast("개발 요청을 5자 이상 작성하세요.", "error"); }
-  setBusy(true, "Claude Code가 변경안 생성 중...");
+  setBusy(true, target ? "Claude Code가 변경안 생성 중..." : "Claude Code가 파일 탐색 및 변경안 생성 중...");
   try {
     const result = await request("/api/propose", {workspace: state.workspace, target, prompt,
       source_kind, source_ref, source_content});
@@ -543,7 +544,7 @@ async function generate() {
     changeTab("diff");
     renderReview();
     await loadHistory();
-    toast("변경안이 생성되었습니다. Diff 검토 후 승인해 주세요.", "success");
+    toast(`변경 대상: ${result.proposal.target} · Diff 검토 후 승인해 주세요.`, "success");
   } catch (err) {
     toast(err.message, "error");
   } finally {
