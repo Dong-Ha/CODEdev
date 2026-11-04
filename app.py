@@ -40,6 +40,12 @@ MAX_SCAN_DIRS = 40000
 MAX_SCAN_DEPTH = 32
 MAX_AUTO_TARGET_FILES = 400
 MAX_FILES_PER_PROPOSAL = 3
+MAX_REFERENCE_FILES = 8
+MAX_REFERENCE_SCAN = 4000
+MAX_REFERENCE_BYTES = 18000
+MAX_REFERENCE_FILE_BYTES = 64 * 1024
+REFERENCE_EXTENSIONS = {'.c', '.h', '.cpp', '.cc', '.hpp', '.dts', '.dtsi', '.rs', '.go', '.py', '.java', '.kt', '.S'}
+REFERENCE_BASENAMES = {'Makefile', 'Kconfig', 'Kbuild'}
 MAX_HISTORY = 35
 CONFIG_FILE = Path(os.environ.get("AX_CONFIG_FILE", str(Path.home() / ".config" / "ax-code-dev" / "profiles.json"))).expanduser()
 CSRF = secrets.token_urlsafe(32)
@@ -59,6 +65,7 @@ EXTENSIONS = {".c", ".h", ".cpp", ".cc", ".hpp", ".py", ".rs", ".go",
 SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "build", "out", "dist",
              "target", ".venv", "venv", "__pycache__", ".next", ".gradle",
              "vendor", ".idea", ".vscode", ".ax-code-dev"}
+REFERENCE_SKIP_DIRS = SKIP_DIRS | {'secrets', 'credentials', 'private_keys', '.ssh'}
 PROFILE_FIELDS = {"project_name", "project_type", "build_dir", "architecture",
                   "cross_compile", "build_command", "build_env", "editable_paths",
                   "blocked_paths", "change_notes", "code_guidelines"}
@@ -698,6 +705,8 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
         # full source files or a long manifest in the visible conversation.
         public_task = task.split("File contents START\n", 1)[0]
         public_task = public_task.split("Allowlisted relative paths (filenames only; no source contents yet):\n", 1)[0]
+        public_task = public_task.split("Reference context START", 1)[0]
+        public_task = public_task.split("Other selected code context (read-only):", 1)[0]
         if len(public_task) > 1400:
             public_task = public_task[:1400] + "\n[추가 설정·명세 일부 생략]"
         on_event("user", "Claude Code에 보낸 지시 (소스 원문·파일 목록 제외):\n" + public_task,
@@ -853,8 +862,135 @@ def select_target(root: Path, prompt: str, profile: dict, context: dict, on_even
     return plan["targets"][0]
 
 
+def _reference_safe(root: Path, path: Path) -> bool:
+    """Host-owned, read-only reference safety filter; unrelated to edit rights."""
+    try:
+        relative = path.relative_to(root)
+        if not relative.parts:
+            return False
+        if any(part.startswith('.') or part in REFERENCE_SKIP_DIRS or
+               'secret' in part.lower() or 'credential' in part.lower()
+               for part in relative.parts):
+            return False
+        if path.suffix not in REFERENCE_EXTENSIONS and path.name not in REFERENCE_BASENAMES:
+            return False
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return False
+        meta = path.stat()
+        return stat.S_ISREG(meta.st_mode) and meta.st_size <= MAX_REFERENCE_FILE_BYTES
+    except (ValueError, OSError):
+        return False
+
+
+def _reference_snippet(path: Path, terms: list[str], limit: int = 2400) -> str:
+    """Read text only; trim to nearby matched lines when possible."""
+    try:
+        contents = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeError):
+        return ''
+    if '\x00' in contents:
+        return ''
+    rows = contents.splitlines()
+    hit = next((i for i, line in enumerate(rows)
+                if any(term in line.lower() for term in terms)), 0)
+    first = max(0, hit - 4)
+    excerpt = '\n'.join(f'{i + 1}: {rows[i]}' for i in range(first, min(first + 55, len(rows))))
+    return excerpt[:limit]
+
+
+def discover_readonly_references(root: Path, targets: dict[str, str],
+                                 prompt: str, on_event=None) -> dict[str, str]:
+    """Look for dependencies anywhere in Project Root, not just editable_paths.
+
+    Source is NEVER modified. No model tool receives unrestricted file access.
+    Only bounded code excerpts are forwarded to Claude Code.
+    """
+    if not targets:
+        return {}
+    terms = []
+    direct = []
+    for relative, source in targets.items():
+        file = root / relative
+        for match in re.finditer(r'^\s*#\s*include\s*[<"]([A-Za-z0-9_./-]+)[>"]', source, re.M):
+            included = match.group(1)
+            if included.startswith('..') or '/..' in included:
+                continue
+            direct.extend((root / 'include' / included, file.parent / included))
+        folder = file.parent
+        while folder != root and folder.is_relative_to(root):
+            direct.extend(folder / name for name in ('Makefile', 'Kconfig', 'Kbuild'))
+            folder = folder.parent
+        terms.extend(re.findall(r'\b[a-z][a-z0-9_]{9,}\b', source))
+        terms.extend(part for part in file.stem.lower().split('_') if len(part) >= 5)
+    terms.extend(x.lower() for x in re.findall(r'[A-Za-z_][A-Za-z0-9_]{4,}', prompt))
+    stop = {'include', 'return', 'struct', 'static', 'const', 'unsigned', 'defined',
+            'enabled', 'extern', 'function', 'source', 'current', 'driver', 'linux',
+            'int', 'char', 'NULL', 'false', 'true'}
+    search_terms = sorted({term.lower() for term in terms if term.lower() not in stop and
+                           (term.count('_') > 0 or len(term) > 7)}, key=lambda x: -len(x))[:12]
+    references = {}
+    budget = MAX_REFERENCE_BYTES
+
+    def add(path: Path) -> None:
+        nonlocal budget
+        if len(references) >= MAX_REFERENCE_FILES or budget <= 0:
+            return
+        if not _reference_safe(root, path):
+            return
+        relative = path.relative_to(root).as_posix()
+        if relative in references or relative in targets:
+            return
+        excerpt = _reference_snippet(path, search_terms, min(2400, budget))
+        if not excerpt:
+            return
+        references[relative] = excerpt
+        budget -= len(excerpt.encode('utf-8'))
+
+    for path in direct[:max(1, MAX_REFERENCE_FILES - 2)]:
+        add(path)
+    # Globally inspect other project source trees for shared symbols. Prefixes
+    # in editable_paths never restrict read-only discovery.
+    checked = 0
+    for base, dirs, files in os.walk(root, followlinks=False):
+        if len(references) >= MAX_REFERENCE_FILES or checked >= MAX_REFERENCE_SCAN:
+            break
+        basepath = Path(base)
+        depth = len(basepath.relative_to(root).parts)
+        dirs[:] = sorted(d for d in dirs if d not in REFERENCE_SKIP_DIRS and
+                         not d.startswith('.') and not (basepath / d).is_symlink()) if depth < MAX_SCAN_DEPTH else []
+        for name in sorted(files):
+            if len(references) >= MAX_REFERENCE_FILES or checked >= MAX_REFERENCE_SCAN:
+                break
+            candidate = basepath / name
+            if not _reference_safe(root, candidate):
+                continue
+            checked += 1
+            relative = candidate.relative_to(root).as_posix()
+            if relative in targets or relative in references:
+                continue
+            if search_terms:
+                try:
+                    # Scan no more than a bounded leading portion of each file.
+                    with candidate.open('rb') as f:
+                        head = f.read(10_000).lower()
+                except OSError:
+                    continue
+                if not any(term.encode('ascii', 'ignore') in head for term in search_terms):
+                    continue
+                add(candidate)
+    if on_event:
+        paths = ', '.join(references)
+        on_event('system', f'Read-only Project Root references: {len(references)} files'
+                 + (f' ({paths})' if paths else ' (none found)'), 'referencing')
+    return references
+
+
 def call_claude(prompt: str, target: str, original: str, profile: dict,
-                context: dict | None = None, on_event=None, related: dict | None = None) -> dict:
+                context: dict | None = None, on_event=None, related: dict | None = None,
+                references: dict[str, str] | None = None) -> dict:
     other_context = ""
     if related:
         excerpts = []
@@ -862,9 +998,15 @@ def call_claude(prompt: str, target: str, original: str, profile: dict,
             if path != target:
                 excerpts.append(f"Related source ({path}), reference only:\n{content[:12000]}")
         other_context = "\n".join(excerpts)[:25000]
+    reference_context = ''
+    if references:
+        reference_context = '\n'.join(
+            f'Reference source: {path} (READ ONLY; do not edit)\n{excerpt}'
+            for path, excerpt in references.items())
     task = (task_context(prompt, profile, context)
             + f"Target path: {target}\n"
             + f"Other selected code context (read-only):\n{other_context}\n"
+            + f"Reference context START (Project Root read-only; NEVER modify these files):\n{reference_context}\nReference context END\n"
             + f"File contents START\n{original}\nFile contents END\n"
             + "Return a complete revised file in new_content; do not modify files.")
     if on_event:
@@ -948,6 +1090,7 @@ def propose(body: dict, handoff_id: str = "", on_event=None, job_id: str = "") -
             job = JOBS.get(job_id)
             if job:
                 job["target"] = ", ".join(targets)
+    references = discover_readonly_references(root, original_map, prompt.strip(), on_event=on_event)
     edited = []
     summary_parts = []
     rationale_parts = []
@@ -956,7 +1099,7 @@ def propose(body: dict, handoff_id: str = "", on_event=None, job_id: str = "") -
     for target in targets:
         original = original_map[target]
         result = call_claude(prompt.strip(), target, original, profile, meta,
-                             on_event=on_event, related=original_map)
+                             on_event=on_event, related=original_map, references=references)
         summary, rationale, risk, checks, revised = validate_result(result, original)
         if on_event:
             on_event("assistant", f"[{target}]\n요약: {summary}\n설명: {rationale}\n위험: {risk}\n검증 제안: {'; '.join(checks[:4])}", "responding")
@@ -1212,7 +1355,7 @@ Handler = build_handler(globals())
 
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev GUI MVP 1.0.0")
+    print("AX Code-Dev GUI MVP 1.1.0")
     print(f"Open: http://{HOST}:{PORT}")
     print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")
