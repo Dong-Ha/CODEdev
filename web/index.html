@@ -64,7 +64,7 @@
         </section>
 
         <section class="stepper" aria-label="작업 단계">
-          <div class="step active" id="step1"><div class="step-circle">1</div><div><strong>작업 정의</strong><small>요구사항 · 대상 파일</small></div></div>
+          <div class="step active" id="step1"><div class="step-circle">1</div><div><strong>작업 정의</strong><small>요구사항 · 수정 범위</small></div></div>
           <div class="step-line"></div>
           <div class="step" id="step2"><div class="step-circle">2</div><div><strong>변경안 생성</strong><small>Claude Code</small></div></div>
           <div class="step-line"></div>
@@ -87,6 +87,24 @@
           <div class="workspace-meta"><div class="workspace-heading">GIT BRANCH</div><div class="workspace-meta-value"><span class="branch-symbol">⑂</span> <span id="branchValue">—</span></div></div>
           <div class="workspace-meta"><div class="workspace-heading">EDITABLE FILES</div><div class="workspace-meta-value"><span id="fileCount">0</span> <span class="muted-small">files</span></div></div>
         </section>
+
+
+        <details id="codeEditablePanel" class="panel editable-files-panel hidden" open>
+          <summary class="editable-files-heading">
+            <span class="editable-files-heading-main"><span class="editable-files-mark" aria-hidden="true">▤</span><strong>수정 가능한 파일</strong><span class="editable-files-count" id="codeEditableTotal">0개</span></span>
+            <span class="editable-files-heading-hint">저장된 수정 허용 경로 기준 · 목록 보기</span>
+          </summary>
+          <div class="editable-files-content">
+            <div class="editable-files-tools">
+              <label class="editable-files-search-label" for="codeEditableSearch">파일 검색</label>
+              <input id="codeEditableSearch" type="search" placeholder="파일명 또는 상대 경로 검색" autocomplete="off" spellcheck="false" />
+              <span id="codeEditableMatches" class="editable-files-matches" role="status">—</span>
+            </div>
+            <ul id="codeEditableList" class="editable-files-list" aria-label="수정 가능한 파일 경로 목록"></ul>
+            <div class="editable-files-footer"><span id="codeEditableFooter">Project Root 기준 상대 경로</span><button type="button" class="btn btn-outline btn-sm hidden" id="codeEditableMore">더 보기</button></div>
+            <p id="codeEditableWarning" class="editable-files-warning hidden" role="status"></p>
+          </div>
+        </details>
 
         <section class="active-env-strip panel" aria-label="현재 코드 개발 환경 설정">
           <div class="active-env-main"><div class="active-env-kicker">ACTIVE DEVELOPMENT PROFILE <span class="active-env-ready" id="activeEnvBadge">SETUP REQUIRED</span></div><div class="active-env-command" id="activeBuildCommand">개발 환경 설정을 먼저 저장하세요.</div><div class="active-env-details"><span>EDIT SCOPE</span><code id="activeEditablePaths">—</code><span class="active-env-note-label">CHANGE TARGET</span><span id="activeChangeNotes">—</span></div></div>
@@ -230,6 +248,24 @@
                 <div class="settings-fields">
                   <div class="settings-row-two"><div class="form-group"><label class="field-label" for="envEditablePaths">EDITABLE PATHS <span class="field-required">*</span></label><textarea id="envEditablePaths" class="code-textarea scope-textarea" rows="5" spellcheck="false" placeholder="drivers/power/supply/**&#10;include/linux/power/**"></textarea><p class="field-caption">Project Root 기준 상대 경로입니다. 예: <code>drivers/power/supply/**</code>. <code>*</code>는 한 단계, <code>**</code>는 하위 폴더 전체입니다.</p></div><div class="form-group"><label class="field-label" for="envBlockedPaths">EXCLUDED PATHS</label><textarea id="envBlockedPaths" class="code-textarea scope-textarea" rows="5" spellcheck="false" placeholder="**/*.key&#10;**/secrets/**"></textarea><p class="field-caption">This is an edit exclusion list, not a read restriction. Sensitive files and symlinks are excluded from reference context independently.</p></div></div>
                   <p id="envScanStatus" class="scope-feedback settings-scan-feedback" role="status" aria-live="polite">수정 허용 경로를 저장하면 탐색된 파일 수와 제한 여부가 표시됩니다.</p><p class="field-caption" role="note">READ: Project Root sources are available as read-only references. EDIT: only files matching Editable Paths can be changed after approval. The reference scan is bounded and does not grant file write or shell access.</p>
+
+                  <details id="envEditablePanel" class="editable-files-panel editable-files-inline hidden" open>
+                    <summary class="editable-files-heading">
+                      <span class="editable-files-heading-main"><span class="editable-files-mark" aria-hidden="true">▤</span><strong>탐색된 수정 가능 파일</strong><span class="editable-files-count" id="envEditableTotal">0개</span></span>
+                      <span class="editable-files-heading-hint">Project Root 기준 상대 경로</span>
+                    </summary>
+                    <div class="editable-files-content">
+                      <div class="editable-files-tools">
+                        <label class="editable-files-search-label" for="envEditableSearch">파일 검색</label>
+                        <input id="envEditableSearch" type="search" placeholder="예: charger.c 또는 drivers/power" autocomplete="off" spellcheck="false" />
+                        <span id="envEditableMatches" class="editable-files-matches" role="status">—</span>
+                      </div>
+                      <ul id="envEditableList" class="editable-files-list" aria-label="수정 가능한 파일 경로 목록"></ul>
+                      <div class="editable-files-footer"><span id="envEditableFooter">저장된 수정 허용 경로 기준</span><button type="button" class="btn btn-outline btn-sm hidden" id="envEditableMore">더 보기</button></div>
+                      <p id="envEditableWarning" class="editable-files-warning hidden" role="status"></p>
+                    </div>
+                  </details>
+
                   <div class="form-group"><label class="field-label" for="envChangeNotes">CHANGE TARGETS &amp; PURPOSE</label><textarea id="envChangeNotes" rows="3" placeholder="예: charger 입력 전류 제한, fuel gauge의 SOC 계산 경계값, 수정 가능한 핵심 함수 등"></textarea><p class="field-caption">어느 기능·함수를 왜 수정해야 하는지 설명하는 문맥입니다. 작업 요청과 함께 에이전트에 전달됩니다.</p></div>
                   <div class="form-group"><label class="field-label" for="envCodeGuidelines">CODING RULES &amp; CONSTRAINTS</label><textarea id="envCodeGuidelines" rows="3" placeholder="예: 기존 커널 코딩 스타일 유지, IRQ 및 레이스 조건 주의, 불필요한 DT 수정 금지"></textarea></div>
                 </div>
