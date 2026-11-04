@@ -70,12 +70,15 @@ print(json.dumps({{'type':'result', 'structured_output':proposal}}))
         SAMPLE_FILE.write_bytes(self.original)
         ax.PROPOSALS.clear()
         ax.RECENT.clear()
+        ax.HANDOFFS.clear()
+        ax.HANDOFF_ORDER.clear()
+        ax.AGENT_TOKEN = 'test-agent-bridge-token-123456789'
         ax.CONFIG_FILE.unlink(missing_ok=True)
         os.environ.pop('AX_FAKE_CLAUDE_FAIL', None)
         os.environ.pop('AX_FAKE_CLAUDE_BAD', None)
         ax.save_profile(ax.SAMPLE.resolve(), ax.default_profile(ax.SAMPLE.resolve()))
 
-    def api(self, route, body=None, token=True, host=None):
+    def api(self, route, body=None, token=True, host=None, agent_token=None):
         headers = {}
         if body is not None:
             headers['Content-Type'] = 'application/json'
@@ -86,6 +89,8 @@ print(json.dumps({{'type':'result', 'structured_output':proposal}}))
             data = None
         if host:
             headers['Host'] = host
+        if agent_token is not None:
+            headers['X-AX-Agent-Token'] = agent_token
         req = Request(self.base + route, data=data, headers=headers,
                       method='POST' if body is not None else 'GET')
         try:
@@ -101,6 +106,112 @@ print(json.dumps({{'type':'result', 'structured_output':proposal}}))
         })
         self.assertEqual(status, 200, data)
         return data['proposal']
+
+    def agent_request(self, **updates):
+        payload = {
+            'workspace': str(ax.SAMPLE), 'target': self.target,
+            'source_agent': 'SW Design', 'source_kind': 'sdd',
+            'source_ref': 'SDD-IFPMIC-014',
+            'source_content': 'Input-current validation requires clamping above max.',
+            'instruction': 'Reject negative input current and preserve normal cases.',
+            'upstream_run_id': 'ax-run-014', 'auto_generate': False,
+        }
+        payload.update(updates)
+        return payload
+
+    def test_12_direct_srs_sdd_and_jira_provenance(self):
+        for kind in ('srs', 'sdd', 'jira', 'freeform'):
+            code, data = self.api('/api/propose', {
+                'workspace': str(ax.SAMPLE), 'target': self.target,
+                'prompt': 'Keep existing valid cases and reject invalid ranges.',
+                'source_kind': kind, 'source_ref': 'TRACE-002',
+                'source_content': 'Boundary cases and expected results are specified.'})
+            self.assertEqual(code, 200, data)
+            self.assertEqual(data['proposal']['origin'], 'human')
+            self.assertEqual(data['proposal']['source_kind'], kind)
+            self.assertEqual(data['proposal']['source_ref'], 'TRACE-002')
+            self.assertFalse(data['proposal']['source_agent'])
+            args = json.loads(Path(os.environ['AX_FAKE_CLAUDE_LOG']).read_text())
+            self.assertIn('TRACE-002', args['task'])
+            self.assertIn('Untrusted reference material START', args['task'])
+            self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+
+    def test_13_agent_handoff_requires_independent_token(self):
+        data = self.agent_request()
+        self.assertEqual(self.api('/api/agent/handoffs', data)[0], 403)
+        self.assertEqual(self.api('/api/agent/handoffs', data, agent_token='wrong')[0], 403)
+        self.assertEqual(self.api('/api/agent/handoffs', agent_token='wrong')[0], 403)
+        self.assertEqual(self.api('/api/agent/handoffs', data, agent_token=ax.AGENT_TOKEN)[0], 202)
+        ax.AGENT_TOKEN = ''
+        self.assertEqual(self.api('/api/agent/handoffs', data, agent_token='test-agent-bridge-token-123456789')[0], 403)
+        code, bootstrap = self.api('/api/bootstrap')
+        self.assertEqual(code, 200)
+        self.assertFalse(bootstrap['agent_intake_enabled'])
+
+    def test_14_sdd_handoff_queued_and_human_review(self):
+        code, answer = self.api('/api/agent/handoffs', self.agent_request(), agent_token=ax.AGENT_TOKEN)
+        self.assertEqual(code, 202, answer)
+        task = answer['task']
+        self.assertEqual(task['status'], 'queued')
+        self.assertFalse(task['proposal_id'])
+        self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+        self.assertEqual(self.api('/api/agent/handoffs/' + task['id'], agent_token=ax.AGENT_TOKEN)[0], 200)
+        queue = self.api('/api/inbox')[1]['tasks']
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]['source_ref'], 'SDD-IFPMIC-014')
+        code, result = self.api('/api/handoff/generate', {'id': task['id']})
+        self.assertEqual(code, 200, result)
+        proposal = result['proposal']
+        self.assertEqual(proposal['origin'], 'agent')
+        self.assertEqual(proposal['source_agent'], 'SW Design')
+        self.assertEqual(proposal['upstream_run_id'], 'ax-run-014')
+        self.assertEqual(self.api('/api/inbox')[1]['tasks'][0]['status'], 'review')
+        self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+        code, applied = self.api('/api/apply', {'id': proposal['id']})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.api('/api/inbox')[1]['tasks'][0]['status'], 'applied')
+        self.assertEqual(self.api('/api/undo', {'id': proposal['id']})[0], 200)
+        self.assertEqual(self.api('/api/inbox')[1]['tasks'][0]['status'], 'undone')
+        self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+
+    def test_15_verification_feedback_autogenerates_review_only(self):
+        data = self.agent_request(source_agent='SQE Agent', source_kind='verification',
+                                  source_ref='SQE-FAIL-8', auto_generate=True,
+                                  source_content='Validation: negative current input must be rejected.')
+        code, result = self.api('/api/agent/handoffs', data, agent_token=ax.AGENT_TOKEN)
+        self.assertEqual(code, 202, result)
+        self.assertEqual(result['task']['status'], 'review')
+        self.assertTrue(result['task']['proposal_id'])
+        self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+        self.assertEqual(self.api('/api/handoff/generate', {'id':result['task']['id']})[0], 409)
+        logged = json.loads(Path(os.environ['AX_FAKE_CLAUDE_LOG']).read_text())
+        self.assertIn('SQE Agent', logged['task'])
+        self.assertIn('SQE-FAIL-8', logged['task'])
+
+    def test_16_handoff_rejects_bad_scope_and_bad_fields(self):
+        wrong = self.agent_request(target='../etc/passwd')
+        self.assertEqual(self.api('/api/agent/handoffs', wrong, agent_token=ax.AGENT_TOKEN)[0], 400)
+        wrong = self.agent_request(source_agent='')
+        self.assertEqual(self.api('/api/agent/handoffs', wrong, agent_token=ax.AGENT_TOKEN)[0], 400)
+        wrong = self.agent_request(source_kind='invalid')
+        self.assertEqual(self.api('/api/agent/handoffs', wrong, agent_token=ax.AGENT_TOKEN)[0], 400)
+        wrong = self.agent_request(source_content='a' * 12001)
+        self.assertEqual(self.api('/api/agent/handoffs', wrong, agent_token=ax.AGENT_TOKEN)[0], 400)
+        self.assertFalse(ax.HANDOFFS)
+
+    def test_17_failed_handoff_can_retry_without_file_writes(self):
+        task = self.api('/api/agent/handoffs', self.agent_request(), agent_token=ax.AGENT_TOKEN)[1]['task']
+        os.environ['AX_FAKE_CLAUDE_FAIL'] = '1'
+        code, result = self.api('/api/handoff/generate', {'id': task['id']})
+        self.assertEqual(code, 502, result)
+        item = self.api('/api/inbox')[1]['tasks'][0]
+        self.assertEqual(item['status'], 'failed')
+        self.assertNotIn('private message', item['error'])
+        self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+        del os.environ['AX_FAKE_CLAUDE_FAIL']
+        code, result = self.api('/api/handoff/generate', {'id':task['id']})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(self.api('/api/inbox')[1]['tasks'][0]['status'], 'review')
 
     def test_00_bootstrap_and_workspace(self):
         code, data = self.api('/api/bootstrap')

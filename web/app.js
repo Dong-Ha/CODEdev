@@ -13,6 +13,10 @@ const state = {
   configBase: "",
   page: "code",
   configFile: "",
+  requestMode: "human",
+  handoffs: [],
+  selectedHandoff: "",
+  agentIntakeEnabled: false,
 };
 const $ = (id) => document.getElementById(id);
 const SAMPLE_PROMPT = "IFPMIC 충전 입력 전류 설정 함수에서 음수 및 최대 허용값 초과 입력을 차단하고, 정상 범위의 기존 동작을 유지해줘.";
@@ -34,8 +38,127 @@ function showPage(page, quiet = false) {
   for (const [id, active] of [["navCodeDev", page === "code"],["navEnvironment",page === "settings"]]) {
     $(id).classList.toggle("active", active);
   }
-  $("currentPageName").textContent = page === "settings" ? "Development Environment" : "Code-Dev Agent";
+  $("currentPageName").textContent = page === "settings" ? "개발 환경" : "Code-Dev";
   window.scrollTo({top: 0, behavior: "instant"});
+}
+
+const SOURCE_LABELS = {
+  freeform: "자유 요청", srs: "SRS", sdd: "SDD", jira: "Jira", verification: "검증 피드백",
+};
+const HANDOFF_LABELS = {
+  queued: "대기", generating: "생성 중", review: "검토 필요",
+  failed: "재시도 필요", applied: "반영 완료", rejected: "반려", undone: "되돌림",
+};
+
+function setRequestMode(mode) {
+  state.requestMode = mode;
+  const human = mode === "human";
+  $("modeHuman").classList.toggle("selected", human);
+  $("modeAgent").classList.toggle("selected", !human);
+  $("modeHuman").setAttribute("aria-pressed", String(human));
+  $("modeAgent").setAttribute("aria-pressed", String(!human));
+  $("humanComposer").classList.toggle("hidden", !human);
+  $("agentInbox").classList.toggle("hidden", human);
+  $("taskPanelTitle").textContent = human ? "직접 개발 요청" : "에이전트 수신함";
+  $("taskPanelSubtitle").textContent = human ? "SRS · SDD · Jira · 자유 요청" : "SDD 인계 · 검증 피드백";
+  if (!human) loadInbox();
+  if (!state.proposal && state.activeTab === "diff") renderPreview();
+}
+
+function updateReferenceFields() {
+  const kind = $("requestKind").value;
+  $("referenceFields").classList.toggle("hidden", kind === "freeform");
+  $("requestRef").placeholder = kind === "jira" ? "예: PMIC-123 또는 Jira URL" : "문서 ID / 추적용 URL (선택)";
+  $("referenceHint").textContent = kind === "jira"
+    ? "Jira URL은 자동 조회하지 않습니다. 이슈 본문과 수용 조건을 아래에 붙여넣으세요."
+    : "문서 ID는 추적용입니다. SRS/SDD 원문 또는 필요한 절을 아래에 붙여넣으세요.";
+}
+
+function incomingForWorkspace() {
+  return state.handoffs.filter(item => item.workspace === state.workspace);
+}
+
+async function loadInbox() {
+  const root = $("inboxList");
+  try {
+    const response = await request("/api/inbox");
+    state.handoffs = response.tasks;
+    const list = incomingForWorkspace();
+    $("inboxCount").textContent = String(list.filter(t => ["queued", "failed", "review"].includes(t.status)).length);
+    root.replaceChildren();
+    if (!list.length) {
+      const empty = document.createElement("div"); empty.className = "inbox-empty";
+      empty.textContent = "이 프로젝트에 전달된 작업이 없습니다. 상위 에이전트가 작업을 보내면 여기에 표시됩니다.";
+      root.appendChild(empty);
+      $("inboxDetails").classList.add("hidden");
+      return;
+    }
+    for (const task of list) {
+      const button = document.createElement("button"); button.type = "button";
+      button.className = `inbox-item ${task.id === state.selectedHandoff ? "selected" : ""}`;
+      button.setAttribute("aria-pressed", String(task.id === state.selectedHandoff));
+      const heading = document.createElement("span"); heading.className = "inbox-item-title";
+      heading.textContent = `${SOURCE_LABELS[task.source_kind] || task.source_kind} · ${task.source_agent}`;
+      const status = document.createElement("span"); status.className = `inbox-task-status ${task.status}`;
+      status.textContent = HANDOFF_LABELS[task.status] || task.status;
+      const desc = document.createElement("span"); desc.className = "inbox-item-summary";
+      desc.textContent = task.instruction;
+      button.append(heading, status, desc);
+      button.addEventListener("click", () => { state.selectedHandoff = task.id; loadInbox(); });
+      root.appendChild(button);
+    }
+    const current = list.find(t => t.id === state.selectedHandoff);
+    if (current) renderIncoming(current);
+    else { state.selectedHandoff = ""; $("inboxDetails").classList.add("hidden"); }
+  } catch (error) {
+    root.replaceChildren();
+    const issue = document.createElement("div"); issue.className = "inbox-error";
+    issue.textContent = `수신함을 불러올 수 없습니다: ${error.message}`;
+    root.appendChild(issue);
+  }
+}
+
+function renderIncoming(task) {
+  $("inboxDetails").classList.remove("hidden");
+  $("incomingTitle").textContent = `${SOURCE_LABELS[task.source_kind] || task.source_kind} · ${HANDOFF_LABELS[task.status] || task.status}`;
+  $("incomingMeta").textContent = `${task.source_agent} · ${task.upstream_run_id || "상위 실행 ID 없음"}`;
+  $("incomingInstruction").textContent = task.instruction;
+  $("incomingTarget").textContent = task.target;
+  $("incomingReference").textContent = task.source_ref || "참조 ID 없음";
+  $("incomingSourceDetails").classList.toggle("hidden", !task.source_content);
+  $("incomingSourceContent").textContent = task.source_content || "";
+  $("incomingError").classList.toggle("hidden", !task.error);
+  $("incomingError").textContent = task.error || "";
+  const button = $("inboxAction");
+  button.disabled = task.status === "generating";
+  button.textContent = ["queued", "failed"].includes(task.status)
+    ? task.status === "failed" ? "변경안 다시 생성" : "변경안 생성"
+    : task.proposal_id ? "변경안 검토하기" : "처리 중";
+}
+
+async function openIncoming() {
+  if (state.busy) return;
+  const task = state.handoffs.find(item => item.id === state.selectedHandoff);
+  if (!task) return toast("먼저 수신 작업을 선택하세요.", "error");
+  if (task.workspace !== state.workspace) return toast("작업의 프로젝트를 다시 연결하세요.", "error");
+  setBusy(true, "Claude Code 작업 처리 중...");
+  $("inboxAction").disabled = true;
+  try {
+    let proposal;
+    if (["queued", "failed"].includes(task.status)) {
+      proposal = (await request("/api/handoff/generate", {id: task.id})).proposal;
+    } else if (task.proposal_id) {
+      proposal = (await request("/api/proposal", {id: task.proposal_id})).proposal;
+    } else throw new Error("현재 작업은 생성 중입니다. 잠시 후 상태를 갱신하세요.");
+    state.proposal = proposal;
+    changeTab("diff"); renderReview(); await loadHistory();
+    toast("변경안을 불러왔습니다. 출처와 Diff를 확인하세요.", "success");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setBusy(false);
+    await loadInbox();
+  }
 }
 
 function envFromForm() {
@@ -210,6 +333,7 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
     $("generateBtn").disabled = !state.configured || state.busy;
     renderReview();
     renderPreview();
+    await loadInbox();
     showPage(!data.configured || keepSettings ? "settings" : "code", true);
     toast(data.configured ? `${data.name} 연결 · 수정 허용 파일 ${data.files.length}개` :
       `${data.name} 연결 · 환경 설정을 먼저 저장하세요.`, data.configured ? "success" : "info");
@@ -306,7 +430,9 @@ function renderPreview() {
     return;
   }
   if (state.activeTab === "diff") {
-    showEmpty();
+    if (state.requestMode === "agent")
+      showEmpty("수신 작업을 선택하세요", "에이전트 수신함에서 작업을 선택해 변경안을 생성하거나 불러오세요.");
+    else showEmpty();
     return;
   }
   if (!state.target || !state.workspace) return showEmpty();
@@ -341,6 +467,15 @@ function renderReview() {
     setSteps(1);
     return;
   }
+  const provenance = $("proposalProvenance");
+  const byAgent = p.origin === "agent";
+  const kind = SOURCE_LABELS[p.source_kind] || SOURCE_LABELS.freeform;
+  provenance.replaceChildren();
+  const label = document.createElement("strong");
+  label.textContent = byAgent ? `에이전트 인계 · ${p.source_agent}` : "직접 요청";
+  const detail = document.createElement("span");
+  detail.textContent = [kind, p.source_ref, p.upstream_run_id].filter(Boolean).join(" · ");
+  provenance.append(label, detail);
   $("proposalSummary").textContent = p.summary;
   $("proposalRationale").textContent = p.rationale;
   $("proposalRisk").textContent = p.risk;
@@ -391,11 +526,19 @@ async function generate() {
   if (!state.configured) return showPage("settings");
   const target = $("targetFile").value;
   const prompt = $("taskPrompt").value.trim();
-  if (!target) return toast("수정 대상 파일을 선택하세요.", "error");
-  if (prompt.length < 5) return toast("작업 요청을 구체적으로 입력하세요.", "error");
+  const source_kind = $("requestKind").value;
+  const source_ref = $("requestRef").value.trim();
+  const source_content = $("requestContent").value.trim();
+  if (!target) { $("targetFile").focus(); return toast("수정 대상 파일을 선택하세요.", "error"); }
+  if (source_kind !== "freeform" && source_content.length < 10) {
+    $("requestContent").focus();
+    return toast("명세 또는 이슈 본문을 10자 이상 붙여넣으세요. 링크만으로는 내용을 가져올 수 없습니다.", "error");
+  }
+  if (prompt.length < 5) { $("taskPrompt").focus(); return toast("개발 요청을 5자 이상 작성하세요.", "error"); }
   setBusy(true, "Claude Code가 변경안 생성 중...");
   try {
-    const result = await request("/api/propose", { workspace: state.workspace, target, prompt });
+    const result = await request("/api/propose", {workspace: state.workspace, target, prompt,
+      source_kind, source_ref, source_content});
     state.proposal = result.proposal;
     changeTab("diff");
     renderReview();
@@ -422,7 +565,7 @@ async function performAction(action) {
   try {
     const result = await request(`/api/${action}`, { id: state.proposal.id });
     state.proposal = result.proposal;
-    renderReview(); renderPreview(); await loadHistory();
+    renderReview(); renderPreview(); await loadHistory(); await loadInbox();
     toast(action === "apply" ? "승인된 변경을 로컬 소스에 반영했습니다." : action === "undo" ? "적용 전 내용으로 복원했습니다." : "제안을 반려했습니다.", "success");
   } catch (err) {
     toast(err.message, "error");
@@ -451,7 +594,7 @@ async function loadHistory() {
       const content = document.createElement("div"); content.className = "history-content";
       const title = document.createElement("div"); title.className = "history-title"; title.textContent = item.summary;
       const path = document.createElement("div"); path.className = "history-path";
-      path.textContent = `${item.target} · Claude Code · ${new Date(item.created_at).toLocaleString("ko-KR")}`;
+      path.textContent = `${item.target} · ${item.origin === "agent" ? item.source_agent : "직접 요청"} / ${SOURCE_LABELS[item.source_kind] || "자유 요청"} · ${new Date(item.created_at).toLocaleString("ko-KR")}`;
       content.append(title,path);
       const chip = document.createElement("span"); chip.className = `history-status ${item.status}`; chip.textContent = names[item.status] || item.status;
       button.append(icon,content,chip);
@@ -461,6 +604,7 @@ async function loadHistory() {
           const result = await request("/api/proposal", {id: item.id});
           state.proposal = result.proposal;
           changeTab("diff"); renderReview(); await loadHistory();
+          if (state.proposal.origin === "agent") setRequestMode("agent");
           window.scrollTo({top: 0,behavior:"smooth"});
         } catch (error) { toast(error.message, "error"); }
       });
@@ -471,6 +615,12 @@ async function loadHistory() {
 
 async function initialize() {
   $("fillSamplePrompt").addEventListener("click", () => { $("taskPrompt").value = SAMPLE_PROMPT; $("taskPrompt").focus(); });
+  $("modeHuman").addEventListener("click", () => setRequestMode("human"));
+  $("modeAgent").addEventListener("click", () => setRequestMode("agent"));
+  $("requestKind").addEventListener("change", updateReferenceFields);
+  $("refreshInbox").addEventListener("click", loadInbox);
+  $("inboxAction").addEventListener("click", openIncoming);
+  updateReferenceFields();
   $("connectWorkspace").addEventListener("click", connectWorkspace);
   $("workspaceInput").addEventListener("keydown", event => { if (event.key === "Enter") connectWorkspace(); });
   $("envEditShortcut").addEventListener("click", () => showPage("settings"));
@@ -502,16 +652,20 @@ async function initialize() {
     renderPreview(); renderReview(); loadHistory();
   });
   document.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click",() => changeTab(el.dataset.tab)));
-  $("taskPrompt").value = SAMPLE_PROMPT;
+  $("taskPrompt").value = "";
   try {
     const response = await request("/api/bootstrap");
     state.token = response.token;
     await refreshClaudeStatus();
     $("serverSideStatus").textContent = "127.0.0.1 · 연결됨";
     state.configFile = response.config_file;
+    state.agentIntakeEnabled = Boolean(response.agent_intake_enabled);
+    $("agentIntakeStatus").textContent = state.agentIntakeEnabled
+      ? "에이전트 API 연결 활성 · 별도 토큰으로 작업 수신" : "수신 API 비활성 · AX_AGENT_TOKEN 설정 후 서버를 다시 시작하세요";
     $("envConfigLocation").textContent = response.config_file;
     $("workspaceInput").value = response.last_workspace || response.sample_path;
     await connectWorkspace();
+    if (state.workspace === response.sample_path) $("taskPrompt").value = SAMPLE_PROMPT;
     if (!state.workspace && response.last_workspace) {
       $("workspaceInput").value = response.sample_path;
       await connectWorkspace();
