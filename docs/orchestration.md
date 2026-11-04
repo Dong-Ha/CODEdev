@@ -70,3 +70,26 @@ GUI의 **에이전트 수신함**에서 작업을 선택해 생성/검토할 수
 - 작업과 이력은 **메모리 보관**이며 재시작하면 사라집니다. 작업 ID와 상태를 상위 오케스트레이터에서도 관리해야 합니다.
 - 수정 허용 경로 제한, 원본 SHA-256 확인, 명시적 사람 승인 절차는 두 진입 경로 모두 같습니다.
 - 원문/설정이 Claude Code의 구성된 AI 서비스로 전송될 수 있습니다. 인증 토큰을 URL/로그/문서에 남기지 마세요.
+
+## Live execution trace (v0.7)
+
+The GUI uses asynchronous jobs so users can inspect real CLI progress while a
+proposal is running. A handoff can use `POST /api/jobs/handoff` with `{"id":"..."}`
+and the browser can use `POST /api/jobs` with the normal human request payload.
+Both require the local GUI CSRF token; orchestration intake still uses its
+independent `X-AX-Agent-Token`.
+
+| API | Purpose |
+| --- | --- |
+| `POST /api/jobs` | Start a human request and return job ID immediately |
+| `POST /api/jobs/handoff` | Generate an existing agent handoff asynchronously |
+| `GET /api/jobs` | List recent in-memory jobs (localhost) |
+| `GET /api/jobs/{id}` | Poll status, phase, visible messages, errors, proposal ID |
+
+Jobs have `queued`, `running`, `complete`, or `failed` status and a distinct
+`phase`. Events distinguish submitted user instructions, CLI progress, visible
+Claude Code structured response summaries, and errors. Raw source, raw CLI
+JSON, tool internals, and hidden reasoning are intentionally omitted from the
+conversation UI. The structured change proposal remains in the Diff/Review
+panel. Jobs do not persist after server restart. Existing synchronous APIs are
+kept for compatibility. `auto_generate=true` handoffs are also traced.

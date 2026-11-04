@@ -17,6 +17,10 @@ const state = {
   handoffs: [],
   selectedHandoff: "",
   agentIntakeEnabled: false,
+  activeRunId: "",
+  displayedRunId: "",
+  lastRun: null,
+  lastEventSeq: 0,
 };
 const $ = (id) => document.getElementById(id);
 const SAMPLE_PROMPT = "IFPMIC 충전 입력 전류 설정 함수에서 음수 및 최대 허용값 초과 입력을 차단하고, 정상 범위의 기존 동작을 유지해줘.";
@@ -139,21 +143,30 @@ function renderIncoming(task) {
 async function openIncoming() {
   if (state.busy) return;
   const task = state.handoffs.find(item => item.id === state.selectedHandoff);
-  if (!task) return toast("먼저 수신 작업을 선택하세요.", "error");
-  if (task.workspace !== state.workspace) return toast("작업의 프로젝트를 다시 연결하세요.", "error");
-  setBusy(true, "Claude Code 작업 처리 중...");
+  if (!task) return toast("Select an incoming task first.", "error");
+  if (task.workspace !== state.workspace) return toast("Reconnect the task workspace.", "error");
+  setBusy(true, "Claude Code is working...");
   $("inboxAction").disabled = true;
   try {
     let proposal;
     if (["queued", "failed"].includes(task.status)) {
-      proposal = (await request("/api/handoff/generate", {id: task.id})).proposal;
+      state.proposal = null;
+      renderPreview(); renderReview();
+      showSubmitting(task.instruction);
+      const response = await request("/api/jobs/handoff", {id: task.id});
+      showRun(response.job, true);
+      const done = await monitorRun(response.job.id);
+      if (done.status !== "complete") throw new Error(done.error || "Claude Code job failed");
+      proposal = (await request("/api/proposal", {id: done.proposal_id})).proposal;
     } else if (task.proposal_id) {
       proposal = (await request("/api/proposal", {id: task.proposal_id})).proposal;
-    } else throw new Error("현재 작업은 생성 중입니다. 잠시 후 상태를 갱신하세요.");
+      if (proposal.job_id) await showSavedRun(proposal.job_id);
+    } else throw new Error("This task is already running. Refresh the inbox.");
     state.proposal = proposal;
     changeTab("diff"); renderReview(); await loadHistory();
-    toast("변경안을 불러왔습니다. 출처와 Diff를 확인하세요.", "success");
+    toast("Review the conversation, provenance and Diff before applying.", "success");
   } catch (error) {
+    showRunError(error.message);
     toast(error.message, "error");
   } finally {
     setBusy(false);
@@ -270,6 +283,139 @@ async function request(route, body) {
   try { data = await response.json(); } catch (e) { throw new Error("서버에서 올바른 JSON이 반환되지 않았습니다."); }
   if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
+}
+
+
+const RUN_STATE_LABELS = {queued:"대기",running:"진행 중",complete:"검토 대기",failed:"실패"};
+const RUN_ROLE_LABELS = {user:"내 요청",assistant:"Claude Code 응답",system:"실행 기록",error:"오류"};
+
+function toggleRunConsole(open) {
+  $("runConsoleBody").classList.toggle("hidden", !open);
+  $("runConsoleToggle").setAttribute("aria-expanded", String(open));
+  $("runConsoleToggle").textContent = open ? "기록 접기" : "기록 보기";
+}
+
+function showSubmitting(prompt) {
+  state.displayedRunId = "";
+  state.lastEventSeq = 0;
+  state.lastRun = null;
+  $("runMessages").replaceChildren();
+  $("runStatus").textContent = "전송 중";
+  $("runStatus").className = "run-status queued";
+  $("runSummary").textContent = "Sending task to local Code-Dev server...";
+  $("runElapsed").textContent = "00:00";
+  $("runIdLabel").textContent = "Awaiting job ID";
+  const row = document.createElement("div"); row.className = "run-message user";
+  const avatar = document.createElement("span"); avatar.className = "run-icon"; avatar.textContent = "U";
+  const content = document.createElement("div"); content.className = "run-message-body";
+  const head = document.createElement("div"); head.className = "run-message-head";
+  const name = document.createElement("strong"); name.textContent = RUN_ROLE_LABELS.user; head.appendChild(name);
+  const msg = document.createElement("p"); msg.textContent = prompt;
+  content.append(head,msg); row.append(avatar,content); $("runMessages").appendChild(row);
+  toggleRunConsole(true);
+  $("runConsole").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+function showRunError(error) {
+  $("runStatus").textContent = RUN_STATE_LABELS.failed;
+  $("runStatus").className = "run-status failed";
+  $("runSummary").textContent = error;
+  toggleRunConsole(true);
+}
+
+function showRun(job, expand = false) {
+  if (!job || !job.id) return;
+  if (state.displayedRunId !== job.id) {
+    state.displayedRunId = job.id;
+    state.lastEventSeq = 0;
+    $("runMessages").replaceChildren();
+  }
+  state.lastRun = job;
+  $("runStatus").className = `run-status ${job.status}`;
+  $("runStatus").textContent = RUN_STATE_LABELS[job.status] || job.status;
+  const secs = Math.max(0, Math.floor((Date.now() - Date.parse(job.created_at)) / 1000)) || 0;
+  $("runElapsed").textContent = `${String(Math.floor(secs/60)).padStart(2,"0")}:${String(secs%60).padStart(2,"0")}`;
+  $("runIdLabel").textContent = `Run ${job.id.slice(0,10)}`;
+  const phases = {
+    queued:"The request was accepted and is waiting to start.",
+    running:"Preparing the request...",selecting:"Selecting a target from editable paths...",
+    selected:"Target selection received.",generating:"Generating a code proposal...",
+    responding:"Claude Code is responding...",review:"Response received. Review the Diff before applying.",
+    applied:"Approved change applied to the workspace.",rejected:"Proposal rejected.",
+    undone:"Source file restored.",failed:"Request failed. Review the error below and retry."
+  };
+  $("runSummary").textContent = job.error || phases[job.phase] || `Stage: ${job.phase}`;
+  const list = $("runMessages");
+  for (const event of job.events || []) {
+    if (!Number.isFinite(event.seq) || event.seq <= state.lastEventSeq) continue;
+    if (state.lastEventSeq === 0 && list.querySelector(".run-empty")) list.replaceChildren();
+    const item = document.createElement("div"); item.className = `run-message ${event.role}`;
+    const avatar = document.createElement("span"); avatar.className = "run-icon";
+    avatar.textContent = ({user:"U",assistant:"C",system:"i",error:"!"})[event.role] || "i";
+    const body = document.createElement("div"); body.className = "run-message-body";
+    const head = document.createElement("div"); head.className = "run-message-head";
+    const name = document.createElement("strong"); name.textContent = RUN_ROLE_LABELS[event.role] || "Execution";
+    const when = document.createElement("time"); when.textContent = new Date(event.at).toLocaleTimeString("ko-KR");
+    head.append(name,when);
+    const msg = document.createElement("p"); msg.textContent = event.text;
+    body.append(head,msg); item.append(avatar,body); list.append(item);
+    state.lastEventSeq = event.seq;
+  }
+  if (expand) toggleRunConsole(true);
+  if ((expand || state.activeRunId === job.id) && list.scrollHeight > list.clientHeight) list.scrollTop = list.scrollHeight;
+}
+
+async function showSavedRun(id) {
+  try {
+    const {job} = await request(`/api/jobs/${encodeURIComponent(id)}`);
+    showRun(job, true);
+    return job;
+  } catch (error) {
+    toast(`Conversation history unavailable: ${error.message}`, "error");
+    return null;
+  }
+}
+
+async function monitorRun(id) {
+  state.activeRunId = id;
+  let failures = 0;
+  while (state.activeRunId === id) {
+    try {
+      const {job} = await request(`/api/jobs/${encodeURIComponent(id)}`);
+      showRun(job, true);
+      failures = 0;
+      if (["complete","failed"].includes(job.status)) {
+        state.activeRunId = "";
+        return job;
+      }
+    } catch (error) {
+      failures++;
+      $("runSummary").textContent = `Connection interrupted (${failures}). Reconnecting... ${error.message}`;
+      if (failures >= 4) throw new Error("Unable to read job progress. Refresh to restore the run log.");
+    }
+    await new Promise(resolve => setTimeout(resolve, 850));
+  }
+  throw new Error("The displayed run was interrupted by navigation.");
+}
+
+async function restoreLastRun() {
+  if (!state.workspace || state.busy) return;
+  try {
+    const {jobs} = await request("/api/jobs");
+    const last = jobs.find(job => job.workspace === state.workspace);
+    if (!last) return;
+    showRun(last, last.status === "running");
+    if (["running","queued"].includes(last.status)) {
+      setBusy(true,"Claude Code is working...");
+      try {
+        const done = await monitorRun(last.id);
+        if (done.status === "complete" && done.proposal_id) {
+          state.proposal = (await request("/api/proposal", {id:done.proposal_id})).proposal;
+          changeTab("diff"); renderReview(); await loadHistory();
+        }
+      } finally {setBusy(false);}
+    }
+  } catch(error) { toast(error.message,"error"); }
 }
 
 function toast(message, variant = "info") {
@@ -523,29 +669,35 @@ function renderReview() {
 
 async function generate() {
   if (state.busy) return;
-  if (!state.workspace) return toast("먼저 워크스페이스를 연결하세요.", "error");
+  if (!state.workspace) return toast("Connect a workspace first.", "error");
   if (!state.configured) return showPage("settings");
   const target = $("targetFile").value;
   const prompt = $("taskPrompt").value.trim();
   const source_kind = $("requestKind").value;
   const source_ref = $("requestRef").value.trim();
   const source_content = $("requestContent").value.trim();
-  if (!state.files.length) return toast("수정 허용 파일이 없습니다. 개발 환경에서 허용 경로를 확인하세요.", "error");
+  if (!state.files.length) return toast("No editable files. Review the environment configuration.", "error");
   if (source_kind !== "freeform" && source_content.length < 10) {
     $("requestContent").focus();
-    return toast("명세 또는 이슈 본문을 10자 이상 붙여넣으세요. 링크만으로는 내용을 가져올 수 없습니다.", "error");
+    return toast("Paste the reference document text (at least 10 characters).", "error");
   }
-  if (prompt.length < 5) { $("taskPrompt").focus(); return toast("개발 요청을 5자 이상 작성하세요.", "error"); }
-  setBusy(true, target ? "Claude Code가 변경안 생성 중..." : "Claude Code가 파일 탐색 및 변경안 생성 중...");
+  if (prompt.length < 5) { $("taskPrompt").focus(); return toast("Describe the task in at least 5 characters.", "error"); }
+  state.proposal = null;
+  renderPreview(); renderReview();
+  setBusy(true, target ? "Claude Code is working..." : "Selecting file and generating...");
+  setSteps(2);
+  showSubmitting(prompt);
   try {
-    const result = await request("/api/propose", {workspace: state.workspace, target, prompt,
+    const {job} = await request("/api/jobs", {workspace: state.workspace, target, prompt,
       source_kind, source_ref, source_content});
-    state.proposal = result.proposal;
-    changeTab("diff");
-    renderReview();
-    await loadHistory();
-    toast(`변경 대상: ${result.proposal.target} · Diff 검토 후 승인해 주세요.`, "success");
+    showRun(job, true);
+    const finished = await monitorRun(job.id);
+    if (finished.status !== "complete") throw new Error(finished.error || "Claude Code job failed");
+    state.proposal = (await request("/api/proposal", {id: finished.proposal_id})).proposal;
+    changeTab("diff"); renderReview(); await loadHistory();
+    toast(`Target: ${state.proposal.target}. Review the Diff before applying.`, "success");
   } catch (err) {
+    showRunError(err.message);
     toast(err.message, "error");
   } finally {
     setBusy(false);
@@ -567,6 +719,7 @@ async function performAction(action) {
     const result = await request(`/api/${action}`, { id: state.proposal.id });
     state.proposal = result.proposal;
     renderReview(); renderPreview(); await loadHistory(); await loadInbox();
+    if (state.proposal.job_id) await showSavedRun(state.proposal.job_id);
     toast(action === "apply" ? "승인된 변경을 로컬 소스에 반영했습니다." : action === "undo" ? "적용 전 내용으로 복원했습니다." : "제안을 반려했습니다.", "success");
   } catch (err) {
     toast(err.message, "error");
@@ -605,6 +758,7 @@ async function loadHistory() {
           const result = await request("/api/proposal", {id: item.id});
           state.proposal = result.proposal;
           changeTab("diff"); renderReview(); await loadHistory();
+          if (state.proposal.job_id) await showSavedRun(state.proposal.job_id);
           if (state.proposal.origin === "agent") setRequestMode("agent");
           window.scrollTo({top: 0,behavior:"smooth"});
         } catch (error) { toast(error.message, "error"); }
@@ -643,6 +797,9 @@ async function initialize() {
   document.querySelectorAll("#settingsView input, #settingsView textarea, #settingsView select")
     .forEach(el => el.addEventListener("input", renderEnvironmentSummary));
   $("generateBtn").addEventListener("click", generate);
+  $("runConsoleToggle").addEventListener("click", () => {
+    toggleRunConsole($("runConsoleBody").classList.contains("hidden"));
+  });
   $("applyBtn").addEventListener("click", () => performAction("apply"));
   $("rejectBtn").addEventListener("click", () => performAction("reject"));
   $("undoBtn").addEventListener("click", () => performAction("undo"));
@@ -672,6 +829,7 @@ async function initialize() {
       await connectWorkspace();
     }
     await loadHistory();
+    await restoreLastRun();
   } catch (error) {
     $("serverSideStatus").textContent = "서버 연결 실패";
     toast(error.message, "error");

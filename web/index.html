@@ -7,6 +7,7 @@
   <meta name="description" content="AX Code-Dev Agent local-first change-review console" />
   <title>AX Studio — Code-Dev Agent</title>
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/run_console.css" />
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -15,7 +16,7 @@
       <div class="brand">
         <span class="brand-logo"><span class="brand-angle">⌁</span></span>
         <div><div class="brand-name">AX Studio</div><div class="brand-sub">AGENT WORKSPACE</div></div>
-        <span class="brand-version">v0.5</span>
+        <span class="brand-version">v0.7</span>
       </div>
 
       <div class="nav-section-label">WORKSPACE</div>
@@ -96,6 +97,18 @@
           <div class="entry-options" role="group" aria-label="요청 경로 선택">
             <button type="button" id="modeHuman" class="entry-choice selected" aria-pressed="true"><strong>직접 요청</strong><span>SRS · SDD · Jira · 자유 요청</span></button>
             <button type="button" id="modeAgent" class="entry-choice" aria-pressed="false"><strong>에이전트 수신함 <span id="inboxCount" class="entry-count">0</span></strong><span>SDD 인계 · 검증 피드백</span></button>
+          </div>
+        </section>
+
+        <section class="panel conversation-panel" id="runConsole" aria-label="Claude Code conversation and execution log">
+          <div class="panel-heading run-console-header">
+            <div class="heading-title"><span class="panel-glyph purple">&#9776;</span><div><h2>Claude Code 대화 · 실행 기록</h2><p>요청 · 실행 상태 · Claude Code 응답</p></div></div>
+            <div class="run-header-actions"><span class="run-status" id="runStatus" role="status">Idle</span><span class="run-elapsed" id="runElapsed">&#8212;</span><button type="button" class="btn btn-outline btn-sm run-toggle" id="runConsoleToggle" aria-expanded="false" aria-controls="runConsoleBody">기록 보기</button></div>
+          </div>
+          <div class="run-summary" id="runSummary">작업을 시작하면 요청과 Claude Code의 응답이 표시됩니다.</div>
+          <div class="run-console-body hidden" id="runConsoleBody">
+            <div id="runMessages" class="run-messages" role="log" aria-label="Claude Code messages and run events" aria-live="polite" aria-relevant="additions"><div class="run-empty">아직 기록이 없습니다.</div></div>
+            <div class="run-console-footer"><span>요청 원문과 실제 응답 요약만 표시합니다. 소스는 Diff에서 확인하세요.</span><span id="runIdLabel" class="run-id">&#8212;</span></div>
           </div>
         </section>
 

@@ -20,6 +20,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -43,6 +44,10 @@ PROPOSALS: dict[str, dict] = {}
 RECENT: list[str] = []
 HANDOFFS: dict[str, dict] = {}
 HANDOFF_ORDER: list[str] = []
+JOBS: dict[str, dict] = {}
+JOB_ORDER: list[str] = []
+MAX_JOBS = 35
+MAX_JOB_EVENTS = 72
 SOURCE_KINDS = {"freeform", "srs", "sdd", "jira", "verification"}
 EXTENSIONS = {".c", ".h", ".cpp", ".cc", ".hpp", ".py", ".rs", ".go",
               ".java", ".kt", ".sh", ".md", ".txt", ".json", ".yaml",
@@ -423,7 +428,7 @@ def request_context(body: dict, *, agent: bool = False) -> dict:
 def public_handoff(h: dict) -> dict:
     return {k: h[k] for k in ("id", "workspace", "target", "source_kind",
             "source_ref", "source_content", "source_agent", "upstream_run_id",
-            "instruction", "status", "created_at", "proposal_id", "error")}
+            "instruction", "status", "created_at", "proposal_id", "job_id", "error")}
 
 
 def validate_handoff(raw: dict) -> dict:
@@ -446,10 +451,10 @@ def validate_handoff(raw: dict) -> dict:
         raise ApiError("source_agent를 입력하세요.")
     return {"id": secrets.token_hex(8), "workspace": str(root), "target": target,
             **meta, "instruction": instruction.strip(), "status": "queued",
-            "created_at": timestamp(), "proposal_id": "", "error": ""}
+            "created_at": timestamp(), "proposal_id": "", "job_id": "", "error": ""}
 
 
-def generate_handoff(ident: str) -> dict:
+def generate_handoff(ident: str, on_event=None, job_id: str = "") -> dict:
     with LOCK:
         item = HANDOFFS.get(ident)
         if not item:
@@ -463,7 +468,7 @@ def generate_handoff(ident: str) -> dict:
         proposal = propose({"workspace": context["workspace"], "target": context["target"],
                             "prompt": context["instruction"], **{k:context[k] for k in
                             ("source_kind", "source_ref", "source_content", "source_agent",
-                             "upstream_run_id")}}, handoff_id=ident)
+                             "upstream_run_id")}}, handoff_id=ident, on_event=on_event, job_id=job_id)
     except Exception as exc:
         with LOCK:
             item["status"] = "failed"
@@ -491,50 +496,118 @@ def create_handoff(raw: dict) -> dict:
         HANDOFFS[item["id"]] = item
         HANDOFF_ORDER.insert(0, item["id"])
     if auto:
+        # Preserve the existing synchronous API response contract while also
+        # storing the request and Claude Code reply in the GUI run log.
         try:
-            generate_handoff(item["id"])
-        except ApiError:
-            # The task remains visible with a recoverable failure status.
-            pass
+            logged = start_job("handoff", {"id": item["id"]})
+            deadline = time.monotonic() + 390
+            while time.monotonic() < deadline:
+                with LOCK:
+                    status = JOBS.get(logged["id"], {}).get("status")
+                if status in {"complete", "failed"}:
+                    break
+                time.sleep(0.04)
+        except ApiError as exc:
+            with LOCK:
+                item["status"] = "failed"
+                item["error"] = str(exc)
     return public_handoff(item)
 
 
-def run_claude_task(task: str, schema: dict) -> dict:
+def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
+    """Read real Claude Code JSONL events without exposing raw code or thinking."""
     binary = shutil.which("claude")
     if not binary:
         raise ApiError("Claude Code CLI를 찾지 못했습니다. 서버가 실행되는 WSL/Linux에 설치하세요.", 503)
     instructions = BASE / "agents" / "code-dev.md"
     cmd = [binary, "-p", "Return structured JSON for the task in stdin.",
-           "--output-format", "json", "--json-schema", json.dumps(schema),
+           "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+           "--json-schema", json.dumps(schema),
            "--system-prompt-file", str(instructions),
            "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
            "--permission-mode", "plan", "--no-session-persistence", "--max-turns", "1"]
+    last_result = None
+    oversized = False
+    reader_error = None
+    progress = {"init": False, "stream": False}
+
+    def read_events(stream, process):
+        nonlocal last_result, oversized, reader_error
+        consumed = 0
+        try:
+            for line in stream:
+                consumed += len(line.encode('utf-8'))
+                if consumed > 12_000_000:
+                    oversized = True
+                    process.kill()
+                    break
+                try:
+                    event = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                kind = event.get("type")
+                if kind == "system" and event.get("subtype") == "init" and not progress["init"]:
+                    progress["init"] = True
+                    model = event.get("model")
+                    if on_event:
+                        info = "Claude Code session ready" + (f" (model: {model})" if isinstance(model, str) else "")
+                        on_event("system", info, "responding")
+                elif (kind == "assistant" or (kind == "stream_event" and
+                        isinstance(event.get("event"), dict) and
+                        isinstance(event["event"].get("delta"), dict) and
+                        event["event"]["delta"].get("type") == "text_delta")) and not progress["stream"]:
+                    progress["stream"] = True
+                    if on_event:
+                        on_event("system", "Claude Code response started; waiting for structured result", "responding")
+                if kind == "result":
+                    last_result = event
+        except (OSError, UnicodeError) as exc:
+            reader_error = exc
+        finally:
+            stream.close()
+
     try:
-        # An isolated cwd avoids loading project-local context or hooks from the
-        # target repository; user-level Claude settings can still apply.
         with tempfile.TemporaryDirectory(prefix="ax-claude-") as scratch:
-            output = subprocess.run(cmd, input=task, cwd=scratch, capture_output=True,
-                                    text=True, timeout=180, check=False)
-    except subprocess.TimeoutExpired as exc:
-        raise ApiError("Claude Code 응답 시간(180초)이 초과되었습니다.", 504) from exc
+            process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True, cwd=scratch,
+                                       bufsize=1)
+            read_thread = threading.Thread(target=read_events, args=(process.stdout, process), daemon=True)
+            read_thread.start()
+            try:
+                process.stdin.write(task)
+                process.stdin.close()
+                returncode = process.wait(timeout=180)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.wait(timeout=5)
+                read_thread.join(timeout=2)
+                raise ApiError("Claude Code 응답 시간(180초)이 초과되었습니다.", 504) from exc
+            finally:
+                if process.stdin and not process.stdin.closed:
+                    process.stdin.close()
+            read_thread.join(timeout=3)
     except OSError as exc:
         raise ApiError("Claude Code CLI를 실행할 수 없습니다. 설치 상태와 실행 권한을 확인하세요.", 503) from exc
-    if output.returncode != 0:
-        # stderr may contain snippets of internal code, configuration, or auth
-        # state: never return it to the web client.
-        raise ApiError(f"Claude Code 실행 실패 (exit {output.returncode}). CLI 인증 상태를 'claude auth status'로 확인하세요.", 502)
-    if len(output.stdout) > 1_200_000:
+    if oversized:
         raise ApiError("Claude Code 응답 크기가 제한을 초과했습니다.", 422)
-    try:
-        envelope = json.loads(output.stdout)
-        result = envelope.get("structured_output") if isinstance(envelope, dict) else None
-        if not isinstance(result, dict) and isinstance(envelope, dict):
-            raw = envelope.get("result")
-            result = json.loads(raw) if isinstance(raw, str) else None
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ApiError("Claude Code가 유효한 JSON 변경안을 반환하지 않았습니다.", 422) from exc
+    if reader_error:
+        raise ApiError("Claude Code 출력 스트림을 읽을 수 없습니다.", 502)
+    if returncode != 0:
+        # Stderr and raw JSON may contain private source or credential material.
+        raise ApiError(f"Claude Code 실행 실패 (exit {returncode}). CLI 인증 상태를 'claude auth status'로 확인하세요.", 502)
+    if not isinstance(last_result, dict):
+        raise ApiError("Claude Code 응답에서 최종 결과를 찾지 못했습니다.", 422)
+    result = last_result.get("structured_output")
     if not isinstance(result, dict):
-        raise ApiError("Claude Code가 유효한 변경안 데이터를 반환하지 않았습니다.", 422)
+        raw = last_result.get("result")
+        try:
+            result = json.loads(raw) if isinstance(raw, str) else None
+        except (ValueError, TypeError):
+            result = None
+    if not isinstance(result, dict):
+        raise ApiError("Claude Code가 유효한 JSON 변경안을 반환하지 않았습니다.", 422)
     return result
 
 
@@ -555,12 +628,14 @@ def task_context(prompt: str, profile: dict, context: dict | None = None) -> str
             f"{json.dumps(environment, ensure_ascii=False)}\n\n")
 
 
-def select_target(root: Path, prompt: str, profile: dict, context: dict) -> str:
+def select_target(root: Path, prompt: str, profile: dict, context: dict, on_event=None) -> str:
     """Select one allowlisted file, rejecting ambiguous or fabricated paths."""
     candidates = configured_files(root, profile)
     if not candidates:
         raise ApiError("수정 허용 파일이 없습니다. 개발 환경의 수정 허용 경로를 확인하세요.", 409)
     if len(candidates) == 1:
+        if on_event:
+            on_event("system", f"One editable file available: {candidates[0]['path']}", "selecting")
         return candidates[0]["path"]
     if len(candidates) > MAX_AUTO_TARGET_FILES:
         raise ApiError(f"수정 허용 파일이 {len(candidates)}개입니다. 자동 선택은 최대 "
@@ -573,22 +648,29 @@ def select_target(root: Path, prompt: str, profile: dict, context: dict) -> str:
             + "\nReturn target as an EXACT path from this list. If you cannot identify "
             + "one confidently from the task and paths alone, return an empty target. "
             + "Use reason to explain the choice or uncertainty. Do not modify files.")
-    selection = run_claude_task(task, CLAUDE_TARGET_SCHEMA)
+    if on_event:
+        on_event("system", f"Selecting from {len(paths)} allowlisted file paths", "selecting")
+    selection = run_claude_task(task, CLAUDE_TARGET_SCHEMA, on_event=on_event)
     target = selection.get("target")
     if not isinstance(target, str) or not target:
         raise ApiError("변경 대상 파일을 자동으로 결정하지 못했습니다. Target File을 직접 선택해 주세요.", 422)
     if target not in paths:
         raise ApiError("Claude Code가 수정 허용 범위 밖의 파일을 선택했습니다. Target File을 직접 선택해 주세요.", 422)
+    if on_event:
+        reason = str(selection.get("reason") or "").strip()[:450]
+        on_event("assistant", f"Selected file: {target}" + (f"\nReason: {reason}" if reason else ""), "selected")
     return target
 
 
 def call_claude(prompt: str, target: str, original: str, profile: dict,
-                context: dict | None = None) -> dict:
+                context: dict | None = None, on_event=None) -> dict:
     task = (task_context(prompt, profile, context)
             + f"Target path: {target}\n"
             + f"File contents START\n{original}\nFile contents END\n"
             + "Return a complete revised file in new_content; do not modify files.")
-    result = run_claude_task(task, CLAUDE_RESULT_SCHEMA)
+    if on_event:
+        on_event("system", f"Generating change proposal for {target}", "generating")
+    result = run_claude_task(task, CLAUDE_RESULT_SCHEMA, on_event=on_event)
     if not isinstance(result.get("new_content"), str):
         raise ApiError("Claude Code 출력에 전체 파일 내용(new_content)이 없습니다.", 422)
     return result
@@ -613,7 +695,7 @@ def validate_result(result: dict, original: str) -> tuple[str, str, str, list[st
 
 
 def to_public(p: dict, full: bool = False) -> dict:
-    public = {k: p[k] for k in ("id", "workspace", "target", "target_selection", "engine", "prompt",
+    public = {k: p[k] for k in ("id", "job_id", "workspace", "target", "target_selection", "engine", "prompt",
                                  "summary", "rationale", "risk", "checks", "plus", "minus",
                                  "status", "created_at", "activity", "origin", "handoff_id", "source_kind",
                                  "source_ref", "source_content", "source_agent", "upstream_run_id")}
@@ -627,7 +709,7 @@ def add_activity(p: dict, msg: str) -> None:
     p["activity"].append({"at": timestamp(), "message": msg})
 
 
-def propose(body: dict, handoff_id: str = "") -> dict:
+def propose(body: dict, handoff_id: str = "", on_event=None, job_id: str = "") -> dict:
     root = resolve_workspace(body.get("workspace"))
     raw_target = body.get("target") or ""
     if not isinstance(raw_target, str):
@@ -641,17 +723,22 @@ def propose(body: dict, handoff_id: str = "") -> dict:
     meta = request_context(body, agent=bool(handoff_id))
     target = raw_target.strip()
     if not target:
-        target = select_target(root, prompt.strip(), profile, meta)
+        target = select_target(root, prompt.strip(), profile, meta, on_event=on_event)
     file = resolve_target(root, target)
     target = file.relative_to(root).as_posix()
     require_editable(root, target, profile)
     original = read_utf8(file)
-    result = call_claude(prompt, target, original, profile, meta)
+    result = call_claude(prompt, target, original, profile, meta, on_event=on_event)
     summary, rationale, risk, checks, revised = validate_result(result, original)
     diff, plus, minus = create_diff(str(target), original, revised)
+    if on_event:
+        rationale = str(rationale)[:700]
+        risk = str(risk)[:300]
+        checks_note = "; ".join(str(x) for x in checks[:4])[:380]
+        on_event("assistant", f"Summary: {summary}\nExplanation: {rationale}\nRisk: {risk}\nChecks: {checks_note}", "review")
     if not plus and not minus:
         raise ApiError("공백이나 줄바꿈을 포함한 실제 변경이 없습니다.", 422)
-    p = {"id": secrets.token_hex(5), "workspace": str(root), "target": str(target),
+    p = {"id": secrets.token_hex(5), "job_id": job_id, "workspace": str(root), "target": str(target),
          "target_selection": "manual" if raw_target.strip() else "auto",
          "config_revision": profile["revision"],
          "engine": "claude", "prompt": prompt.strip(), "summary": summary,
@@ -667,6 +754,8 @@ def propose(body: dict, handoff_id: str = "") -> dict:
         RECENT.insert(0, p["id"])
         while len(RECENT) > MAX_HISTORY:
             PROPOSALS.pop(RECENT.pop(), None)
+    if on_event:
+        on_event("system", f"Diff ready: {target}, +{plus}/-{minus}. No source files changed.", "review")
     return to_public(p, True)
 
 
@@ -718,163 +807,125 @@ def change_status(body: dict, action: str) -> dict:
         else:
             p["status"] = "rejected"
             add_activity(p, "사용자 반려 · 원본 파일 유지")
+        if p.get("job_id"):
+            job_event(p["job_id"], "system", f"Review decision: {p['status']} ({p['target']})", p["status"])
         if p.get("handoff_id") and p["handoff_id"] in HANDOFFS:
             HANDOFFS[p["handoff_id"]]["status"] = p["status"]
         return to_public(p, True)
 
 
-class Handler(BaseHTTPRequestHandler):
-    server_version = "AXCodeDevMVP/0.6"
-    def _headers(self, status: int, mime: str = "application/json; charset=utf-8", length: int = 0):
-        self.send_response(status)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Length", str(length))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
-        self.end_headers()
+def public_job(job: dict) -> dict:
+    return {key: job[key] for key in ("id", "workspace", "origin", "handoff_id",
+            "prompt", "status", "phase", "target", "proposal_id", "error",
+            "created_at", "updated_at", "events")}
 
-    def _json(self, status: int, data: dict):
-        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self._headers(status, length=len(raw))
-        self.wfile.write(raw)
 
-    def _error(self, exc: Exception):
-        status = exc.status if isinstance(exc, ApiError) else 500
-        message = str(exc) if isinstance(exc, ApiError) else "서버 내부 오류가 발생했습니다. 서버 터미널 로그를 확인하세요."
-        self._json(status, {"ok": False, "error": message})
+def job_event(ident: str, role: str, message: str, phase: str | None = None) -> None:
+    """Only visible requests, trusted status and structured Claude outputs are logged."""
+    with LOCK:
+        job = JOBS.get(ident)
+        if not job:
+            return
+        if role not in {"user", "system", "assistant", "error"}:
+            role = "system"
+        if phase:
+            job["phase"] = phase
+        job["updated_at"] = timestamp()
+        text = str(message).strip()[:1800]
+        if text:
+            seq = job["next_seq"]
+            job["next_seq"] += 1
+            job["events"].append({"seq": seq, "at": timestamp(), "role": role,
+                                  "text": text})
+            if len(job["events"]) > MAX_JOB_EVENTS:
+                job["events"] = job["events"][-MAX_JOB_EVENTS:]
+
+
+def start_job(kind: str, body: dict) -> dict:
+    if kind == "handoff":
+        with LOCK:
+            handoff = HANDOFFS.get(body.get("id"))
+            if not handoff:
+                raise ApiError("전달받은 작업을 찾을 수 없습니다.", 404)
+            if handoff["status"] not in {"queued", "failed"}:
+                raise ApiError("이미 처리 중이거나 제안이 생성된 작업입니다.", 409)
+            workspace = handoff["workspace"]
+            prompt = handoff["instruction"]
+            origin = "agent"
+            target = handoff["target"]
+            handoff_id = handoff["id"]
+    else:
+        workspace = str(resolve_workspace(body.get("workspace")))
+        require_profile(Path(workspace))
+        prompt = body.get("prompt", "")
+        if not isinstance(prompt, str) or not 5 <= len(prompt.strip()) <= 4000:
+            raise ApiError("작업 요청은 5~4000자로 작성하세요.")
+        if body.get("engine", "claude") != "claude":
+            raise ApiError("Claude Code만 지원합니다.")
+        origin, handoff_id = "human", ""
+        target = body.get("target", "") or ""
+    with LOCK:
+        if any(j["workspace"] == workspace and j["status"] in {"queued", "running"}
+               for j in JOBS.values()):
+            raise ApiError("이 프로젝트에서 다른 Claude Code 요청을 처리 중입니다.", 409)
+        ident = secrets.token_hex(10)
+        job = {"id": ident, "workspace": workspace, "origin": origin,
+               "handoff_id": handoff_id, "prompt": prompt.strip(), "target": target,
+               "status": "queued", "phase": "queued", "proposal_id": "", "error": "",
+               "created_at": timestamp(), "updated_at": timestamp(),
+               "events": [], "next_seq": 1}
+        JOBS[ident] = job
+        JOB_ORDER.insert(0, ident)
+        while len(JOB_ORDER) > MAX_JOBS:
+            old = JOB_ORDER.pop()
+            JOBS.pop(old, None)
+        if handoff_id:
+            HANDOFFS[handoff_id]["job_id"] = ident
+    job_event(ident, "user", prompt, "queued")
+    job_event(ident, "system", "Request received; waiting for Claude Code CLI", "queued")
+    worker = threading.Thread(target=run_job, args=(ident, kind, dict(body)), daemon=True)
+    worker.start()
+    with LOCK:
+        return public_job(job)
+
+
+def run_job(ident: str, kind: str, body: dict) -> None:
+    job_event(ident, "system", "Processing request", "running")
+    with LOCK:
+        if ident not in JOBS:
+            return
+        JOBS[ident]["status"] = "running"
+    callback = lambda role, message, phase=None: job_event(ident, role, message, phase)
+    try:
+        if kind == "handoff":
+            proposal = generate_handoff(body["id"], on_event=callback, job_id=ident)
+        else:
+            proposal = propose(body, on_event=callback, job_id=ident)
+        with LOCK:
+            job = JOBS.get(ident)
+            if job:
+                job["proposal_id"] = proposal["id"]
+                job["target"] = proposal["target"]
+                job["status"] = "complete"
+        job_event(ident, "system", "Proposal ready for your review; source remains unchanged", "review")
+    except Exception as exc:
+        message = str(exc) if isinstance(exc, ApiError) else "Internal job error; check server console"
+        with LOCK:
+            job = JOBS.get(ident)
+            if job:
+                job["status"] = "failed"
+                job["error"] = message
+        job_event(ident, "error", message, "failed")
         if not isinstance(exc, ApiError):
-            self.log_error("Internal error: %r", exc)
+            print(f"[{timestamp()}] job {ident} failed: {type(exc).__name__}")
 
-    def _origin_ok(self) -> bool:
-        hostname = self.headers.get("Host", "")
-        if hostname not in {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}:
-            return False
-        origin = self.headers.get("Origin")
-        if origin and origin not in {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}:
-            return False
-        return True
 
-    def _agent_authorized(self) -> bool:
-        return bool(AGENT_TOKEN) and hmac.compare_digest(
-            self.headers.get("X-AX-Agent-Token", ""), AGENT_TOKEN)
-
-    def do_GET(self):
-        if not self._origin_ok():
-            return self._json(403, {"ok": False, "error": "로컬 호스트 접속만 허용됩니다."})
-        route = urlparse(self.path).path
-        if route == "/api/bootstrap":
-            store = read_store()
-            return self._json(200, {"ok": True, "token": CSRF, "sample_path": str(SAMPLE.resolve()),
-                                    "last_workspace": store.get("last_workspace", ""),
-                                    "config_file": str(CONFIG_FILE),
-                                    "version": "0.6.0", "agent_intake_enabled": bool(AGENT_TOKEN),
-                                    "limitations": {"max_file_kb": 64}})
-        if route == "/api/claude/status":
-            return self._json(200, {"ok": True, **claude_status()})
-        if route == "/api/history":
-            with LOCK:
-                return self._json(200, {"ok": True, "history": [to_public(PROPOSALS[i]) for i in RECENT]})
-        if route == "/api/inbox":
-            with LOCK:
-                return self._json(200, {"ok": True, "tasks": [public_handoff(HANDOFFS[i]) for i in HANDOFF_ORDER]})
-        if route == "/api/agent/handoffs" or route.startswith("/api/agent/handoffs/"):
-            if not self._agent_authorized():
-                return self._json(403, {"ok": False, "error": "에이전트 연동 인증이 필요합니다."})
-            with LOCK:
-                if route == "/api/agent/handoffs":
-                    return self._json(200, {"ok": True, "tasks": [public_handoff(HANDOFFS[i]) for i in HANDOFF_ORDER]})
-                ident = route.rsplit("/", 1)[1]
-                item = HANDOFFS.get(ident)
-                if not item:
-                    return self._json(404, {"ok": False, "error": "작업 ID를 찾을 수 없습니다."})
-                return self._json(200, {"ok": True, "task": public_handoff(item)})
-        if route.startswith("/api/"):
-            return self._json(404, {"ok": False, "error": "찾을 수 없는 API입니다."})
-        asset = {"/": "index.html", "/index.html": "index.html", "/style.css": "style.css",
-                 "/app.js": "app.js"}.get(route)
-        if not asset:
-            return self._headers(404, "text/plain", 0)
-        path = WEB / asset
-        if not path.exists():
-            return self._headers(404, "text/plain", 0)
-        data = path.read_bytes()
-        mime = {"html": "text/html; charset=utf-8", "css": "text/css; charset=utf-8",
-                "js": "application/javascript; charset=utf-8"}[path.suffix[1:]]
-        self._headers(200, mime, len(data))
-        self.wfile.write(data)
-
-    def do_POST(self):
-        if not self._origin_ok():
-            return self._json(403, {"ok": False, "error": "허용되지 않은 Origin/Host입니다."})
-        route = urlparse(self.path).path
-        agent_api = route == "/api/agent/handoffs"
-        if agent_api:
-            if not self._agent_authorized():
-                return self._json(403, {"ok": False, "error": "에이전트 연동 인증이 필요합니다."})
-        elif self.headers.get("X-AX-Token") != CSRF:
-            return self._json(403, {"ok": False, "error": "요청 검증 토큰이 누락되었습니다."})
-        if not self.headers.get("Content-Type", "").startswith("application/json"):
-            return self._json(415, {"ok": False, "error": "JSON 요청만 지원합니다."})
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= MAX_REQUEST_BYTES:
-                raise ApiError("요청 본문이 비어 있거나 크기 제한을 초과합니다.", 413)
-            body = json.loads(self.rfile.read(length))
-            if not isinstance(body, dict):
-                raise ApiError("JSON 객체를 전달하세요.")
-            if agent_api:
-                return self._json(202, {"ok": True, "task": create_handoff(body)})
-            if route == "/api/workspace":
-                root = resolve_workspace(body.get("path"))
-                profile = profile_for(root)
-                all_files = collect_files(root)
-                allowed = configured_files(root, profile, all_files)
-                return self._json(200, {"ok": True, "path": str(root), "name": root.name,
-                                        "branch": git_branch(root), "files": allowed,
-                                        "total_files": len(all_files),
-                                        "configured": profile is not None,
-                                        "config": profile if profile else default_profile(root),
-                                        "is_sample": root == SAMPLE.resolve()})
-            if route == "/api/config/save":
-                root = resolve_workspace(body.get("workspace"))
-                profile = save_profile(root, body.get("config"), body.get("expected_revision"))
-                allowed = configured_files(root, profile)
-                return self._json(200, {"ok": True, "config": profile,
-                                        "editable_files": len(allowed), "workspace": str(root)})
-            if route == "/api/file":
-                root = resolve_workspace(body.get("workspace"))
-                path = resolve_target(root, body.get("target"))
-                require_editable(root, str(body.get("target")))
-                return self._json(200, {"ok": True, "content": read_utf8(path)})
-            if route == "/api/propose":
-                return self._json(200, {"ok": True, "proposal": propose(body)})
-            if route == "/api/handoff/generate":
-                return self._json(200, {"ok": True, "proposal": generate_handoff(body.get("id"))})
-            if route in {"/api/apply", "/api/reject", "/api/undo"}:
-                action = route.rsplit("/", 1)[1]
-                return self._json(200, {"ok": True, "proposal": change_status(body, action)})
-            if route == "/api/proposal":
-                with LOCK:
-                    p = PROPOSALS.get(body.get("id"))
-                    if not p:
-                        raise ApiError("제안이 존재하지 않습니다.", 404)
-                    return self._json(200, {"ok": True, "proposal": to_public(p, True)})
-            raise ApiError("찾을 수 없는 API입니다.", 404)
-        except (ApiError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
-            self._error(exc if isinstance(exc, ApiError) else ApiError("요청 데이터가 올바르지 않습니다."))
-        except Exception as exc:
-            self._error(exc)
-
-    def log_message(self, fmt: str, *args) -> None:
-        if self.path.startswith("/api/"):
-            print(f"[{timestamp()}] {self.client_address[0]} {fmt % args}")
-
+from http_api import build_handler
+Handler = build_handler(globals())
 
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev GUI MVP 0.6.0")
+    print("AX Code-Dev GUI MVP 0.7.0")
     print(f"Open: http://{HOST}:{PORT}")
     print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")
