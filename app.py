@@ -39,6 +39,7 @@ MAX_SCAN_FILES = 120000
 MAX_SCAN_DIRS = 40000
 MAX_SCAN_DEPTH = 32
 MAX_AUTO_TARGET_FILES = 400
+MAX_FILES_PER_PROPOSAL = 3
 MAX_HISTORY = 35
 CONFIG_FILE = Path(os.environ.get("AX_CONFIG_FILE", str(Path.home() / ".config" / "ax-code-dev" / "profiles.json"))).expanduser()
 CSRF = secrets.token_urlsafe(32)
@@ -493,8 +494,12 @@ CLAUDE_RESULT_SCHEMA = {
 # Selection sees only the allowlisted file paths, not the files' source contents.
 CLAUDE_TARGET_SCHEMA = {
     "type": "object",
-    "properties": {"target": {"type": "string"}, "reason": {"type": "string"}},
-    "required": ["target", "reason"],
+    "properties": {
+        "targets": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"},
+        "question": {"type": "string"},
+    },
+    "required": ["targets", "reason", "question"],
     "additionalProperties": False,
 }
 
@@ -543,7 +548,7 @@ def validate_handoff(raw: dict) -> dict:
         target = path.relative_to(root).as_posix()
         require_editable(root, target, profile)
     elif not configured_files(root, profile):
-        raise ApiError("수정 허용 파일이 없습니다. 개발 환경의 수정 허용 경로를 확인하세요.", 409)
+        raise ApiError("개발 환경의 수정 허용 경로에 편집 가능한 파일이 없습니다. 경로를 확인하세요.", 409)
     instruction = raw.get("instruction", "")
     if not isinstance(instruction, str) or not 5 <= len(instruction.strip()) <= 4000:
         raise ApiError("instruction은 5~4000자로 입력하세요.")
@@ -580,7 +585,7 @@ def generate_handoff(ident: str, on_event=None, job_id: str = "") -> dict:
     with LOCK:
         item["status"] = proposal["status"]
         item["proposal_id"] = proposal["id"]
-        item["target"] = proposal["target"]
+        item["target"] = ", ".join(proposal["changed_files"]) or proposal["target"]
     return proposal
 
 
@@ -605,7 +610,7 @@ def create_handoff(raw: dict) -> dict:
             while time.monotonic() < deadline:
                 with LOCK:
                     status = JOBS.get(logged["id"], {}).get("status")
-                if status in {"complete", "no_change", "failed"}:
+                if status in {"complete", "no_change", "needs_clarification", "failed"}:
                     break
                 time.sleep(0.04)
         except ApiError as exc:
@@ -632,12 +637,25 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
     reader_error = None
     progress = {"init": False, "stream": False}
 
+    def show_claude_text(value: object) -> None:
+        """Show actual non-JSON assistant prose, never thinking/tool/source payloads."""
+        if not on_event or not isinstance(value, str):
+            return
+        value = value.strip()
+        # Structured Claude output is JSON containing full new_content; it is
+        # displayed later as summary/rationale and in the Diff, not in chat.
+        if not value or value.startswith(("{", "[", "```json")) or '"new_content"' in value:
+            return
+        if len(value) > 1600:
+            value = value[:1600] + "\n[길어서 일부만 표시]"
+        on_event("assistant", value, "responding")
+
     def read_events(stream, process):
         nonlocal last_result, oversized, reader_error
         consumed = 0
         try:
             for line in stream:
-                consumed += len(line.encode('utf-8'))
+                consumed += len(line.encode("utf-8"))
                 if consumed > 12_000_000:
                     oversized = True
                     process.kill()
@@ -655,13 +673,19 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
                     if on_event:
                         info = "Claude Code session ready" + (f" (model: {model})" if isinstance(model, str) else "")
                         on_event("system", info, "responding")
-                elif (kind == "assistant" or (kind == "stream_event" and
-                        isinstance(event.get("event"), dict) and
-                        isinstance(event["event"].get("delta"), dict) and
-                        event["event"]["delta"].get("type") == "text_delta")) and not progress["stream"]:
+                if kind in ("assistant", "stream_event") and not progress["stream"]:
                     progress["stream"] = True
                     if on_event:
-                        on_event("system", "Claude Code response started; waiting for structured result", "responding")
+                        on_event("system", "Claude Code가 응답하기 시작했습니다.", "responding")
+                # An `assistant` event is a real model-visible message. Ignore
+                # thinking, tool calls, raw JSON and source-containing payloads.
+                if kind == "assistant":
+                    message = event.get("message") or {}
+                    blocks = message.get("content") if isinstance(message, dict) else None
+                    if isinstance(blocks, list):
+                        for block in blocks:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                show_claude_text(block.get("text"))
                 if kind == "result":
                     last_result = event
         except (OSError, UnicodeError) as exc:
@@ -670,6 +694,14 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
             stream.close()
 
     if on_event:
+        # Show the actual task instruction sent to the CLI without repeating
+        # full source files or a long manifest in the visible conversation.
+        public_task = task.split("File contents START\n", 1)[0]
+        public_task = public_task.split("Allowlisted relative paths (filenames only; no source contents yet):\n", 1)[0]
+        if len(public_task) > 1400:
+            public_task = public_task[:1400] + "\n[추가 설정·명세 일부 생략]"
+        on_event("user", "Claude Code에 보낸 지시 (소스 원문·파일 목록 제외):\n" + public_task,
+                 "cli_running")
         on_event("system", "Claude Code CLI 호출 중", "cli_running")
     try:
         with tempfile.TemporaryDirectory(prefix="ax-claude-") as scratch:
@@ -736,48 +768,103 @@ def task_context(prompt: str, profile: dict, context: dict | None = None) -> str
             f"{json.dumps(environment, ensure_ascii=False)}\n\n")
 
 
-def select_target(root: Path, prompt: str, profile: dict, context: dict, on_event=None) -> str:
-    """Select one allowlisted file, rejecting ambiguous or fabricated paths."""
+def choose_targets(root: Path, prompt: str, profile: dict, context: dict,
+                   on_event=None, target_hint: str = "") -> dict:
+    """Discover up to 3 existing files under the setup allowlist.
+
+    Ambiguous tasks produce a conversational clarification, never a request to
+    select a file in the human GUI. Optional agent target hints remain supported.
+    """
     scan = scan_workspace(root, profile)
     candidates = scan["files"]
     if scan["stats"]["truncated"]:
-        raise ApiError("파일 탐색이 제한되었습니다: " + scan["stats"]["limit_reason"]
-                       + " Target File을 직접 지정하거나 수정 허용 경로를 좁혀주세요.", 422)
+        raise ApiError("수정 허용 경로 탐색 한도를 초과했습니다. 개발 환경에서 허용 경로를 좁혀 주세요: "
+                       + scan["stats"]["limit_reason"], 422)
     if not candidates:
-        raise ApiError("수정 허용 파일이 없습니다. 개발 환경의 수정 허용 경로를 확인하세요.", 409)
-    if len(candidates) == 1:
-        if on_event:
-            on_event("system", f"One editable file available: {candidates[0]['path']}", "selecting")
-        return candidates[0]["path"]
-    if len(candidates) > MAX_AUTO_TARGET_FILES:
-        raise ApiError(f"수정 허용 파일이 {len(candidates)}개입니다. 자동 선택은 최대 "
-                       f"{MAX_AUTO_TARGET_FILES}개까지 지원합니다. 파일을 지정하거나 허용 범위를 좁혀주세요.", 422)
+        raise ApiError("개발 환경의 수정 허용 경로에서 편집 가능한 파일을 찾지 못했습니다. 경로를 확인하세요.", 409)
     paths = [item["path"] for item in candidates]
+    if target_hint:
+        if target_hint not in paths:
+            raise ApiError("상위 에이전트가 보낸 경로가 개발 환경의 수정 허용 범위에 없습니다.", 403)
+        return {"targets": [target_hint], "reason": "상위 작업이 지정한 파일을 사용합니다.", "question": ""}
+    if len(paths) == 1:
+        if on_event:
+            on_event("system", f"허용 범위의 유일한 파일: {paths[0]}", "selecting")
+        return {"targets": paths, "reason": "허용된 파일이 하나이므로 해당 파일을 검토합니다.", "question": ""}
+
+    # Avoid another global file count dependency. Rank a large candidate pool
+    # by task terms and filename segments, then present the best-scoring paths
+    # to Claude; do not pretend the reduced list is the complete workspace.
+    if len(paths) > MAX_AUTO_TARGET_FILES:
+        terms = set(re.findall(r"[A-Za-z0-9_]{3,}", prompt.lower()))
+        def relevance(path):
+            lower = path.lower()
+            stem = Path(path).stem.lower()
+            tokens = re.findall(r"[a-z0-9]{3,}", lower)
+            return (sum(6 if term == stem else 3 if term in tokens else 1
+                        for term in terms if term in lower),
+                    -len(path))
+        scored = sorted(paths, key=lambda path: (-relevance(path)[0], -relevance(path)[1], path))
+        if relevance(scored[0])[0] == 0:
+            # No grounded way to select from a broad source tree, so ask
+            # about the component/function in ordinary conversational terms.
+            return {"targets": [], "reason": "허용 범위가 넓고 요청에서 관련 모듈을 구분할 근거가 부족합니다.",
+                    "question": "수정하려는 기능, 드라이버 또는 함수 이름을 조금 더 설명해 주세요."}
+        paths = scored[:MAX_AUTO_TARGET_FILES]
+        if on_event:
+            on_event("system", f"허용 파일 {len(candidates)}개 중 요청과 관련된 후보 {len(paths)}개를 탐색합니다.", "selecting")
+
     task = (task_context(prompt, profile, context)
-            + "Select exactly one target file for this task from these allowlisted paths.\n"
+            + "Choose the existing source files required to implement this request. "
+            + f"Select up to {MAX_FILES_PER_PROPOSAL} paths, only if their filenames and task "
+            + "make the selection reasonably grounded. Cross-file edits are allowed.\n"
             + "Allowlisted relative paths (filenames only; no source contents yet):\n"
             + json.dumps(paths, ensure_ascii=False)
-            + "\nReturn target as an EXACT path from this list. If you cannot identify "
-            + "one confidently from the task and paths alone, return an empty target. "
-            + "Use reason to explain the choice or uncertainty. Do not modify files.")
+            + "\nReturn targets EXACTLY as strings from the list, reason describing why. "
+            + "If uncertain, return targets=[] and a Korean question about the "
+            + "feature/component you need the user to clarify (not a request to pick a Target File). "
+            + "Never invent paths, and do not modify files.")
     if on_event:
-        on_event("system", f"Selecting from {len(paths)} allowlisted file paths", "selecting")
-    selection = run_claude_task(task, CLAUDE_TARGET_SCHEMA, on_event=on_event)
-    target = selection.get("target")
-    if not isinstance(target, str) or not target:
-        raise ApiError("변경 대상 파일을 자동으로 결정하지 못했습니다. Target File을 직접 선택해 주세요.", 422)
-    if target not in paths:
-        raise ApiError("Claude Code가 수정 허용 범위 밖의 파일을 선택했습니다. Target File을 직접 선택해 주세요.", 422)
+        on_event("system", f"Claude Code가 허용된 {len(paths)}개 파일의 경로에서 관련 코드를 찾고 있습니다.", "selecting")
+    answer = run_claude_task(task, CLAUDE_TARGET_SCHEMA, on_event=on_event)
+    targets = answer.get("targets")
+    if not isinstance(targets, list) or len(targets) > MAX_FILES_PER_PROPOSAL:
+        raise ApiError("Claude Code가 파일 탐색 형식과 개수 제한을 지키지 않았습니다.", 422)
+    if any(not isinstance(t, str) or t not in paths for t in targets):
+        raise ApiError("Claude Code가 수정 허용 범위 밖의 경로를 제안해 작업을 중단했습니다.", 422)
+    targets = list(dict.fromkeys(targets))
+    reason = str(answer.get("reason") or "")[:800]
+    question = str(answer.get("question") or "")[:400]
     if on_event:
-        reason = str(selection.get("reason") or "").strip()[:450]
-        on_event("assistant", f"Selected file: {target}" + (f"\nReason: {reason}" if reason else ""), "selected")
-    return target
+        if reason:
+            on_event("assistant", "파일 탐색 결과: " + reason, "selecting")
+        if targets:
+            on_event("system", "관련 파일: " + ", ".join(targets), "selected")
+        else:
+            on_event("assistant", question or "어느 기능을 수정해야 하는지 조금 더 구체적으로 알려주세요.", "needs_clarification")
+    return {"targets": targets, "reason": reason, "question": question}
+
+
+def select_target(root: Path, prompt: str, profile: dict, context: dict, on_event=None) -> str:
+    """Legacy read-only helper; the human-facing workflow uses choose_targets."""
+    plan = choose_targets(root, prompt, profile, context, on_event)
+    if not plan["targets"]:
+        raise ApiError(plan["question"] or "수정할 기능을 조금 더 구체적으로 설명해 주세요.", 422)
+    return plan["targets"][0]
 
 
 def call_claude(prompt: str, target: str, original: str, profile: dict,
-                context: dict | None = None, on_event=None) -> dict:
+                context: dict | None = None, on_event=None, related: dict | None = None) -> dict:
+    other_context = ""
+    if related:
+        excerpts = []
+        for path, content in related.items():
+            if path != target:
+                excerpts.append(f"Related source ({path}), reference only:\n{content[:12000]}")
+        other_context = "\n".join(excerpts)[:25000]
     task = (task_context(prompt, profile, context)
             + f"Target path: {target}\n"
+            + f"Other selected code context (read-only):\n{other_context}\n"
             + f"File contents START\n{original}\nFile contents END\n"
             + "Return a complete revised file in new_content; do not modify files.")
     if on_event:
@@ -811,9 +898,17 @@ def to_public(p: dict, full: bool = False) -> dict:
                                  "summary", "rationale", "risk", "checks", "plus", "minus",
                                  "status", "created_at", "activity", "origin", "handoff_id", "source_kind",
                                  "source_ref", "source_content", "source_agent", "upstream_run_id")}
+    public["file_count"] = len(p.get("files", []))
+    public["changed_files"] = [f["path"] for f in p.get("files", []) if f["code_changed"]]
+    public["question"] = p.get("question", "")
     if full:
         public.update({"diff": p["diff"], "original_content": p["original"],
-                       "new_content": p["new_content"]})
+                       "new_content": p["new_content"],
+                       "files": [{"path": f["path"], "original_content": f["original"],
+                                  "new_content": f["new_content"], "diff": f["diff"],
+                                  "plus": f["plus"], "minus": f["minus"],
+                                  "code_changed": f["code_changed"]}
+                                 for f in p.get("files", [])]})
     return public
 
 
@@ -823,9 +918,6 @@ def add_activity(p: dict, msg: str) -> None:
 
 def propose(body: dict, handoff_id: str = "", on_event=None, job_id: str = "") -> dict:
     root = resolve_workspace(body.get("workspace"))
-    raw_target = body.get("target") or ""
-    if not isinstance(raw_target, str):
-        raise ApiError("Target File은 상대 파일 경로 또는 빈 문자열이어야 합니다.")
     profile = require_profile(root)
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str) or not 5 <= len(prompt.strip()) <= 4000:
@@ -833,52 +925,94 @@ def propose(body: dict, handoff_id: str = "", on_event=None, job_id: str = "") -
     if body.get("engine", "claude") != "claude":
         raise ApiError("Claude Code만 지원합니다.")
     meta = request_context(body, agent=bool(handoff_id))
-    target = raw_target.strip()
-    if not target:
-        target = select_target(root, prompt.strip(), profile, meta, on_event=on_event)
-    file = resolve_target(root, target)
-    target = file.relative_to(root).as_posix()
-    require_editable(root, target, profile)
+    # A legacy agent handoff may supply a path hint; direct human requests
+    # never need or use a Target File parameter.
+    hint = body.get("target", "") if handoff_id else ""
+    if not isinstance(hint, str):
+        raise ApiError("상위 작업의 대상 경로 형식이 잘못되었습니다.")
+    hint = hint.strip()
+    plan = choose_targets(root, prompt.strip(), profile, meta, on_event=on_event,
+                          target_hint=hint)
+    targets = plan["targets"]
+    original_map = {}
+    for target in targets:
+        path = resolve_target(root, target)
+        require_editable(root, target, profile)
+        original_map[target] = read_utf8(path)
+    if on_event:
+        on_event("system", ("수정 범위: " + ", ".join(targets)) if targets else
+                 "추가 설명이 필요한 요청입니다. 코드 변경은 생성하지 않습니다.",
+                 "selected" if targets else "needs_clarification")
     if job_id:
         with LOCK:
             job = JOBS.get(job_id)
             if job:
-                job["target"] = target
-    if on_event:
-        method = "직접 지정" if raw_target.strip() else "허용 범위에서 자동 선택"
-        on_event("system", f"수정 대상 파일: {target} ({method})", "selected")
-    original = read_utf8(file)
-    result = call_claude(prompt, target, original, profile, meta, on_event=on_event)
-    summary, rationale, risk, checks, revised = validate_result(result, original)
-    # Always record Claude's actual structured explanation, even with zero diff.
-    if on_event:
-        checks_note = "; ".join(str(x) for x in checks[:4])[:350]
-        on_event("assistant", f"Summary: {summary}\nExplanation: {rationale}\nRisk: {risk}\nChecks: {checks_note}", "responding")
-    diff, plus, minus = create_diff(str(target), original, revised)
-    changed = bool(plus or minus)
-    status = "review" if changed else "no_change"
-    p = {"id": secrets.token_hex(5), "job_id": job_id, "workspace": str(root), "target": str(target),
-         "target_selection": "manual" if raw_target.strip() else "auto", "code_changed": changed,
-         "config_revision": profile["revision"],
+                job["target"] = ", ".join(targets)
+    edited = []
+    summary_parts = []
+    rationale_parts = []
+    risks = []
+    checks_all = []
+    for target in targets:
+        original = original_map[target]
+        result = call_claude(prompt.strip(), target, original, profile, meta,
+                             on_event=on_event, related=original_map)
+        summary, rationale, risk, checks, revised = validate_result(result, original)
+        if on_event:
+            on_event("assistant", f"[{target}]\n요약: {summary}\n설명: {rationale}\n위험: {risk}\n검증 제안: {'; '.join(checks[:4])}", "responding")
+        diff, plus, minus = create_diff(target, original, revised)
+        edited.append({"path": target, "original": original, "new_content": revised,
+                       "original_hash": sha(original), "new_hash": sha(revised),
+                       "plus": plus, "minus": minus, "diff": diff,
+                       "code_changed": bool(plus or minus)})
+        summary_parts.append(summary)
+        rationale_parts.append(rationale if len(targets) == 1 else f"{target}: {rationale}")
+        risks.append(risk)
+        checks_all.extend(checks)
+    changed = any(f["code_changed"] for f in edited)
+    if not targets:
+        status = "needs_clarification"
+        summary = "수정할 기능에 대한 추가 설명이 필요합니다"
+        rationale = plan["question"] or plan["reason"] or "수정하려는 기능을 조금 더 설명해 주세요."
+        risk = "코드가 수정되지 않았습니다."
+        checks = []
+    else:
+        status = "review" if changed else "no_change"
+        summary = " / ".join(summary_parts)[:320]
+        rationale = "\n".join(rationale_parts)[:2000]
+        risk = "; ".join(dict.fromkeys(risks))[:400]
+        checks = list(dict.fromkeys(checks_all))[:8]
+    first = edited[0] if edited else None
+    p = {"id": secrets.token_hex(5), "job_id": job_id, "workspace": str(root),
+         "target": first["path"] if first else "", "target_selection": "auto",
+         "code_changed": changed, "config_revision": profile["revision"],
          "engine": "claude", "prompt": prompt.strip(), "summary": summary,
          "origin": "agent" if handoff_id else "human", "handoff_id": handoff_id, **meta,
-         "rationale": rationale, "risk": risk, "checks": checks, "plus": plus, "minus": minus,
-         "status": status, "created_at": timestamp(), "original": original,
-         "original_hash": sha(original), "new_content": revised, "new_hash": sha(revised),
-         "diff": diff, "activity": []}
-    add_activity(p, "변경 제안 생성 · 실제 파일 미수정" if changed else
-                 "Claude Code 정상 응답 · 코드 변경 없음 · 실제 파일 미수정")
-    add_activity(p, f"변경 범위 분석 · +{plus} / -{minus} 라인")
+         "rationale": rationale, "risk": risk, "checks": checks,
+         "plus": sum(f["plus"] for f in edited),
+         "minus": sum(f["minus"] for f in edited),
+         "status": status, "created_at": timestamp(), "files": edited,
+         "original": first["original"] if first else "",
+         "original_hash": first["original_hash"] if first else "",
+         "new_content": first["new_content"] if first else "",
+         "new_hash": first["new_hash"] if first else "",
+         "diff": first["diff"] if first else [], "activity": [],
+         "question": plan["question"] if not targets else ""}
+    add_activity(p, "작업 요청 정상 응답 · 실제 파일 미수정" if targets else
+                 "파일 선정 보류 · 사용자 추가 설명 필요 · 실제 파일 미수정")
+    add_activity(p, f"변경 파일 {sum(f['code_changed'] for f in edited)}개 / 검토 파일 {len(edited)}개")
     with LOCK:
         PROPOSALS[p["id"]] = p
         RECENT.insert(0, p["id"])
         while len(RECENT) > MAX_HISTORY:
             PROPOSALS.pop(RECENT.pop(), None)
     if on_event:
-        if changed:
-            on_event("system", f"Diff ready: {target}, +{plus}/-{minus}. No source files changed.", "review")
+        if status == "review":
+            on_event("system", f"Diff 생성 완료: 변경된 파일 {sum(f['code_changed'] for f in edited)}개. 승인 전 원본 유지.", "review")
+        elif status == "no_change":
+            on_event("system", "Claude Code 정상 응답 · 변경된 파일 없음. 원본 유지.", "no_change")
         else:
-            on_event("system", f"Claude Code 응답 정상 · {target}의 변경 사항 없음. 위 설명을 확인하고 요청을 다시 작성하세요. 원본 파일 유지.", "no_change")
+            on_event("assistant", rationale, "needs_clarification")
     return to_public(p, True)
 
 
@@ -905,33 +1039,48 @@ def change_status(body: dict, action: str) -> dict:
         p = PROPOSALS.get(ident)
         if not p:
             raise ApiError("제안이 존재하지 않거나 서버 재시작으로 만료되었습니다.", 404)
-        if action == "apply" and p["status"] != "review":
-            raise ApiError("검토 상태인 제안만 승인할 수 있습니다.", 409)
-        if action == "reject" and p["status"] != "review":
-            raise ApiError("검토 상태인 제안만 반려할 수 있습니다.", 409)
+        if action in {"apply", "reject"} and p["status"] != "review":
+            raise ApiError("검토 중인 변경안만 승인하거나 반려할 수 있습니다.", 409)
         if action == "undo" and p["status"] != "applied":
             raise ApiError("반영된 제안만 되돌릴 수 있습니다.", 409)
         if action in {"apply", "undo"}:
             root = resolve_workspace(p["workspace"])
-            path = resolve_target(root, p["target"])
+            files = [f for f in p.get("files", []) if f["code_changed"]]
+            # Check every file and current profile before writing any file.
             if action == "apply":
-                current_profile = require_editable(root, p["target"])
-                if current_profile["revision"] != p["config_revision"]:
+                profile = require_profile(root)
+                if profile["revision"] != p["config_revision"]:
                     raise ApiError("제안 생성 후 개발 환경 설정이 변경되었습니다. 변경안을 다시 생성하세요.", 409)
-            # Undo is still permitted after a scope change to restore a prior approved edit.
-            current = read_utf8(path)
-            expected = p["original_hash"] if action == "apply" else p["new_hash"]
-            if sha(current) != expected:
-                raise ApiError("파일이 제안 이후 외부에서 변경되었습니다. 덮어쓰기를 중단했습니다.", 409)
-            atomic_write(path, p["new_content"] if action == "apply" else p["original"])
+            validated = []
+            for entry in files:
+                path = resolve_target(root, entry["path"])
+                if action == "apply":
+                    require_editable(root, entry["path"], profile)
+                actual = read_utf8(path)
+                expected = entry["original_hash"] if action == "apply" else entry["new_hash"]
+                if sha(actual) != expected:
+                    raise ApiError("파일이 변경안 생성 후 외부에서 수정됐습니다: " + entry["path"] + ". 반영하지 않았습니다.", 409)
+                validated.append((path, entry, actual))
+            saved = []
+            try:
+                for path, entry, before in validated:
+                    atomic_write(path, entry["new_content"] if action == "apply" else entry["original"])
+                    saved.append((path, before))
+            except OSError as exc:
+                for path, before in reversed(saved):
+                    try:
+                        atomic_write(path, before)
+                    except OSError:
+                        pass  # best effort rollback; report failure
+                raise ApiError("파일 반영 중 오류가 발생했습니다. 파일들을 점검하세요. 변경 작업을 중단했습니다.", 500) from exc
             p["status"] = "applied" if action == "apply" else "undone"
-            add_activity(p, "사용자 승인 · 로컬 파일 반영 완료" if action == "apply" else
-                         "사용자 요청 · 반영 내용 되돌리기 완료")
+            add_activity(p, "사용자 승인 · 변경 파일 일괄 반영 완료" if action == "apply" else
+                         "사용자 요청 · 변경 파일 되돌리기 완료")
         else:
             p["status"] = "rejected"
             add_activity(p, "사용자 반려 · 원본 파일 유지")
         if p.get("job_id"):
-            job_event(p["job_id"], "system", f"Review decision: {p['status']} ({p['target']})", p["status"])
+            job_event(p["job_id"], "system", f"Review decision: {p['status']} ({len(p.get('files', []))} files)", p["status"])
         if p.get("handoff_id") and p["handoff_id"] in HANDOFFS:
             HANDOFFS[p["handoff_id"]]["status"] = p["status"]
         return to_public(p, True)
@@ -1035,9 +1184,12 @@ def run_job(ident: str, kind: str, body: dict) -> None:
             job = JOBS.get(ident)
             if job:
                 job["proposal_id"] = proposal["id"]
-                job["target"] = proposal["target"]
-                job["status"] = "no_change" if proposal["status"] == "no_change" else "complete"
-        if proposal["status"] == "no_change":
+                job["target"] = ", ".join(proposal["changed_files"]) or proposal["target"]
+                job["status"] = ("complete" if proposal["status"] == "review"
+                                 else proposal["status"])
+        if proposal["status"] == "needs_clarification":
+            job_event(ident, "assistant", proposal["question"] or proposal["rationale"], "needs_clarification")
+        elif proposal["status"] == "no_change":
             job_event(ident, "system", "Claude Code 호출 성공 · 코드 변경 없음. 판단 근거를 확인하고 필요하면 요청을 수정하세요.", "no_change")
         else:
             job_event(ident, "system", "Proposal ready for your review; source remains unchanged", "review")
@@ -1060,7 +1212,7 @@ Handler = build_handler(globals())
 
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev GUI MVP 0.8.0")
+    print("AX Code-Dev GUI MVP 1.0.0")
     print(f"Open: http://{HOST}:{PORT}")
     print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")

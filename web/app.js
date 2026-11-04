@@ -5,7 +5,7 @@ const state = {
   workspace: null,
   files: [],
   scan: null,
-  target: "",
+  previewFile: "",
   proposal: null,
   activeTab: "diff",
   busy: false,
@@ -51,7 +51,7 @@ const SOURCE_LABELS = {
   freeform: "자유 요청", srs: "SRS", sdd: "SDD", jira: "Jira", verification: "검증 피드백",
 };
 const HANDOFF_LABELS = {
-  queued: "대기", generating: "생성 중", review: "검토 필요", no_change: "변경 없음",
+  queued: "대기", generating: "생성 중", review: "검토 필요", no_change: "변경 없음", needs_clarification: "추가 설명 필요",
   failed: "재시도 필요", applied: "반영 완료", rejected: "반려", undone: "되돌림",
 };
 
@@ -138,7 +138,7 @@ function renderIncoming(task) {
   button.disabled = task.status === "generating";
   button.textContent = ["queued", "failed"].includes(task.status)
     ? task.status === "failed" ? "변경안 다시 생성" : "변경안 생성"
-    : task.proposal_id ? (task.status === "no_change" ? "응답 결과 확인하기" : "변경안 검토하기") : "처리 중";
+    : task.proposal_id ? (["no_change", "needs_clarification"].includes(task.status) ? "응답 결과 확인하기" : "변경안 검토하기") : "처리 중";
 }
 
 async function openIncoming() {
@@ -157,7 +157,7 @@ async function openIncoming() {
       const response = await request("/api/jobs/handoff", {id: task.id});
       showRun(response.job, true);
       const done = await monitorRun(response.job.id);
-      if (!["complete", "no_change"].includes(done.status)) throw new Error(done.error || "Claude Code job failed");
+      if (!["complete", "no_change", "needs_clarification"].includes(done.status)) throw new Error(done.error || "Claude Code job failed");
       proposal = (await request("/api/proposal", {id: done.proposal_id})).proposal;
     } else if (task.proposal_id) {
       proposal = (await request("/api/proposal", {id: task.proposal_id})).proposal;
@@ -165,8 +165,8 @@ async function openIncoming() {
     } else throw new Error("This task is already running. Refresh the inbox.");
     state.proposal = proposal;
     changeTab("diff"); renderReview(); await loadHistory();
-    toast(proposal.status === "no_change" ? "Claude Code가 정상 응답했지만 코드 변경은 없습니다. 판단 근거를 확인하세요." :
-      "Review the conversation, provenance and Diff before applying.", proposal.status === "no_change" ? "info" : "success");
+    toast(proposal.status === "needs_clarification" ? "Claude Code가 추가 설명을 요청했습니다." : proposal.status === "no_change" ? "Claude Code가 정상 응답했지만 코드 변경은 없습니다. 판단 근거를 확인하세요." :
+      "Review the conversation, provenance and Diff before applying.", ["no_change", "needs_clarification"].includes(proposal.status) ? "info" : "success");
   } catch (error) {
     showRunError(error.message);
     toast(error.message, "error");
@@ -313,7 +313,7 @@ async function request(route, body) {
 }
 
 
-const RUN_STATE_LABELS = {queued:"대기",running:"진행 중",complete:"검토 대기",no_change:"변경 없음",failed:"실패"};
+const RUN_STATE_LABELS = {queued:"대기",running:"진행 중",complete:"검토 대기",no_change:"변경 없음",needs_clarification:"추가 설명 필요",failed:"실패"};
 const CLI_STATE_LABELS = {not_started:"Claude Code 호출 전",running:"Claude Code 호출 중",succeeded:"Claude Code 호출 성공",failed:"Claude Code 호출 실패"};
 const RUN_ROLE_LABELS = {user:"내 요청",assistant:"Claude Code 응답",system:"실행 기록",error:"오류"};
 
@@ -367,16 +367,17 @@ function showRun(job, expand = false) {
   const cli = job.cli_status || "not_started";
   $("runCliStatus").className = `run-cli-status ${cli}`;
   $("runCliStatus").textContent = CLI_STATE_LABELS[cli] || "Claude Code 상태 확인 중";
-  $("runTargetLabel").textContent = job.target ? `대상 파일: ${job.target}` : "대상 파일 확인 중";
+  $("runTargetLabel").textContent = job.target ? `관련 파일: ${job.target}` : "허용 경로에서 관련 파일 확인 중";
   const secs = Math.max(0, Math.floor((Date.now() - Date.parse(job.created_at)) / 1000)) || 0;
   $("runElapsed").textContent = `${String(Math.floor(secs/60)).padStart(2,"0")}:${String(secs%60).padStart(2,"0")}`;
   $("runIdLabel").textContent = `Run ${job.id.slice(0,10)}`;
   const phases = {
     queued:"The request was accepted and is waiting to start.",
-    running:"Preparing the request...",selecting:"Selecting a target from editable paths...",
-    selected:"Target selection received.",generating:"Generating a code proposal...",
+    running:"Preparing the request...",selecting:"허용된 경로에서 관련 소스 탐색 중...",
+    selected:"관련 파일 탐색 완료.",generating:"관련 소스의 변경안 생성 중...",
     responding:"Claude Code is responding...",review:"Response received. Review the Diff before applying.",
     no_change:"Claude Code 호출 성공. 반환된 코드가 원본과 동일합니다. 판단 근거를 확인하고 필요하면 요청을 수정하세요.",
+    needs_clarification:"Claude Code가 추가 설명을 요청했습니다. 대화를 확인하고 기능이나 변경 조건을 구체화해 다시 요청하세요.",
     applied:"Approved change applied to the workspace.",rejected:"Proposal rejected.",
     undone:"Source file restored.",failed:"Request failed. Review the error below and retry."
   };
@@ -420,7 +421,7 @@ async function monitorRun(id) {
       const {job} = await request(`/api/jobs/${encodeURIComponent(id)}`);
       showRun(job, true);
       failures = 0;
-      if (["complete","no_change","failed"].includes(job.status)) {
+      if (["complete","no_change","needs_clarification","failed"].includes(job.status)) {
         state.activeRunId = "";
         return job;
       }
@@ -445,12 +446,12 @@ async function restoreLastRun() {
       setBusy(true,"Claude Code is working...");
       try {
         const done = await monitorRun(last.id);
-        if (["complete", "no_change"].includes(done.status) && done.proposal_id) {
+        if (["complete", "no_change", "needs_clarification"].includes(done.status) && done.proposal_id) {
           state.proposal = (await request("/api/proposal", {id:done.proposal_id})).proposal;
           changeTab("diff"); renderReview(); await loadHistory();
         }
       } finally {setBusy(false);}
-    } else if (last.status === "no_change" && last.proposal_id && !state.proposal) {
+    } else if (["no_change", "needs_clarification"].includes(last.status) && last.proposal_id && !state.proposal) {
       state.proposal = (await request("/api/proposal", {id:last.proposal_id})).proposal;
       changeTab("diff"); renderReview(); await loadHistory();
     }
@@ -469,7 +470,7 @@ function setBusy(busy, text = "변경안 생성하기") {
   state.busy = busy;
   $("generateBtn").disabled = busy || !state.configured;
   $("connectWorkspace").disabled = busy;
-  $("targetFile").disabled = busy;
+  // File discovery is driven exclusively by the saved editable-path scope.
   $("generateText").textContent = text;
   $("generateBtn").querySelector(".btn-sparkle").textContent = busy ? "◌" : "✦";
   renderReview();
@@ -511,12 +512,7 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
     $("workspacePill").classList.add("online");
     $("branchValue").textContent = data.branch;
     $("fileCount").textContent = String(data.files.length);
-    const select = $("targetFile");
-    select.replaceChildren();
-    select.add(new Option(data.configured ? "자동 선택 · 수정 허용 범위에서 찾기" : "환경 설정 후 자동 선택", ""));
-    for (const file of data.files) select.add(new Option(file.path, file.path));
-    select.value = "";
-    state.target = "";
+    state.previewFile = "";
     $("generateBtn").disabled = !state.configured || state.busy;
     renderReview();
     renderPreview();
@@ -534,13 +530,13 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
 }
 
 function updateFileLabel(file) {
-  const name = file || "자동 선택 대기 · 수정 허용 파일";
+  const name = file || "허용 경로 기반 자동 탐색";
   $("filePathLabel").textContent = name;
   const ext = file && file.includes(".") ? file.split(".").pop().toUpperCase() : "—";
   $("fileLang").textContent = ext;
 }
 
-function showEmpty(message = "새로운 변경을 시작하세요", subtext = "요청을 작성하고 변경안을 생성하세요.\n파일을 지정하지 않으면 허용 범위에서 자동으로 선택합니다.") {
+function showEmpty(message = "새로운 변경을 시작하세요", subtext = "요청을 작성하면 개발 환경의 수정 허용 경로에서 관련 파일을 찾아 변경안을 생성합니다.") {
   const container = $("diffBody");
   container.replaceChildren();
   const wrap = document.createElement("div"); wrap.className = "empty-diff";
@@ -601,36 +597,46 @@ function setDiffHeader(proposal) {
   for (const [value, kind] of [[`+${proposal.plus}`, "plus"],[`-${proposal.minus}`, "minus"]]) {
     const pill = document.createElement("span"); pill.className = `stat-pill ${kind}`; pill.textContent = value; stats.appendChild(pill);
   }
-  const status = { review: "READY FOR REVIEW", no_change: "NO CHANGES", applied: "APPLIED", rejected: "REJECTED", undone: "UNDONE" }[proposal.status] || "REVIEW";
+  const status = { review: "READY FOR REVIEW", no_change: "NO CHANGES", needs_clarification: "NEEDS DETAILS", applied: "APPLIED", rejected: "REJECTED", undone: "UNDONE" }[proposal.status] || "REVIEW";
   $("fileStatus").textContent = `● ${status}`;
   $("fileStatus").style.color = proposal.status === "applied" ? "#1caa78" : proposal.status === "no_change" ? "#976413" : "#8b7ada";
   $("diffFooterMessage").textContent = proposal.status === "review" ? "검토 후 승인하거나 반려하세요" :
     proposal.status === "applied" ? "승인된 변경안이 파일에 반영되었습니다" :
     proposal.status === "undone" ? "변경을 이전 내용으로 되돌렸습니다" :
-    proposal.status === "no_change" ? "Claude Code 호출 성공 · 원본 코드와 동일 · 파일 미수정" : "제안을 반려했습니다. 파일을 수정하지 않았습니다";
+    proposal.status === "no_change" ? "Claude Code 호출 성공 · 원본 코드와 동일 · 파일 미수정" :
+    proposal.status === "needs_clarification" ? "Claude Code가 요청의 추가 설명을 기다립니다 · 파일 미수정" : "제안을 반려했습니다. 파일을 수정하지 않았습니다";
 }
 
 function renderPreview() {
-  updateFileLabel(state.proposal ? state.proposal.target : state.target);
   const proposal = state.proposal;
+  const files = proposal?.files || [];
+  const chosen = files.find(f => f.path === state.previewFile) || files[0] || null;
+  const selector = $("reviewFileSelect");
+  const bar = $("reviewFilesBar");
+  bar.classList.toggle("hidden", files.length < 2);
+  selector.replaceChildren();
+  for (const file of files) selector.add(new Option(`${file.code_changed ? "●" : "="} ${file.path}`, file.path));
+  if (chosen) { selector.value = chosen.path; state.previewFile = chosen.path; }
+  $("reviewFilesCount").textContent = `${files.filter(f => f.code_changed).length}/${files.length}개 변경`;
+  updateFileLabel(chosen?.path || proposal?.target || "");
   setDiffHeader(proposal);
   if (proposal) {
-    if (state.activeTab === "original") renderPlain(proposal.original_content);
-    else if (state.activeTab === "revised") renderPlain(proposal.new_content);
-    else renderDiff(proposal.diff);
+    if (proposal.status === "needs_clarification") {
+      showEmpty("추가 설명이 필요합니다", proposal.question || proposal.rationale || "요청을 조금 더 구체적으로 작성해 주세요.");
+    } else if (chosen) {
+      if (state.activeTab === "original") renderPlain(chosen.original_content);
+      else if (state.activeTab === "revised") renderPlain(chosen.new_content);
+      else renderDiff(chosen.diff || []);
+    }
     return;
   }
   if (state.activeTab === "diff") {
     if (state.requestMode === "agent")
       showEmpty("수신 작업을 선택하세요", "에이전트 수신함에서 작업을 선택해 변경안을 생성하거나 불러오세요.");
     else showEmpty();
-    return;
+  } else {
+    showEmpty("변경안 생성 전", "Claude Code가 관련 파일을 선택하면 원본과 변경 후 파일을 볼 수 있습니다.");
   }
-  if (!state.target || !state.workspace) return showEmpty("파일 자동 선택 대기", "변경안을 생성하면 Claude Code가 수정 허용 파일 중 대상을 선정합니다.");
-  // Before proposal generation Original/Revised both show read-only source.
-  request("/api/file", { workspace: state.workspace, target: state.target })
-    .then(data => { if (!state.proposal) renderPlain(data.content); })
-    .catch(err => toast(err.message, "error"));
 }
 
 function changeTab(tab) {
@@ -649,7 +655,7 @@ function renderReview() {
   const hasDetails = Boolean(p);
   $("reviewStatus").classList.toggle("hidden", inReview);
   $("reviewContent").classList.toggle("hidden", !hasDetails);
-  $("retryRequestBtn").classList.toggle("hidden", !p || p.status !== "no_change");
+  $("retryRequestBtn").classList.toggle("hidden", !p || !["no_change", "needs_clarification"].includes(p.status));
   $("applyBtn").disabled = true;
   $("rejectBtn").disabled = !inReview || state.busy;
   $("undoBtn").disabled = !p || p.status !== "applied" || state.busy;
@@ -667,7 +673,7 @@ function renderReview() {
   label.textContent = byAgent ? `에이전트 인계 · ${p.source_agent}` : "직접 요청";
   const detail = document.createElement("span");
   detail.textContent = [kind, p.source_ref, p.upstream_run_id,
-    `${p.target_selection === "auto" ? "자동 선택" : "직접 지정"}: ${p.target}`]
+    p.file_count ? `자동 탐색: ${p.file_count}개 관련 파일` : "추가 정보 요청"]
     .filter(Boolean).join(" · ");
   provenance.append(label, detail);
   $("proposalSummary").textContent = p.summary;
@@ -684,7 +690,7 @@ function renderReview() {
   }
   if (inReview) {
     setSteps(3);
-    const reviewItems = ["Diff 전체 및 의도하지 않은 변경 확인",
+    const reviewItems = ["모든 변경 파일의 Diff를 확인",
                          "영향 범위와 실패 경로 검토",
                          "실제 빌드·테스트는 아직 실행되지 않았음을 확인"];
     for (const check of reviewItems) {
@@ -702,6 +708,7 @@ function renderReview() {
     $("reviewStatus").className = `review-status ${p.status}`;
     const messages = {
       no_change: ["=", "Claude Code 정상 응답 · 변경 없음", "호출에는 성공했지만 현재 파일과 동일한 코드가 반환됐습니다. 아래 판단 근거를 확인한 뒤 요청을 수정하세요. 파일은 변경되지 않았습니다."],
+      needs_clarification: ["?", "Claude Code 추가 설명 요청", "Claude Code가 개발할 파일을 충분히 판단하지 못했습니다. 파일을 직접 고를 필요 없이 수정할 기능이나 동작을 더 구체적으로 설명해 주세요."],
       applied: ["✓", "파일 반영 완료", "승인된 내용을 실제 소스에 반영했습니다."],
       rejected: ["×", "제안 반려 완료", "원본 파일은 변경되지 않았습니다."],
       undone: ["↺", "파일 되돌리기 완료", "제안 적용 전 파일 내용으로 복원했습니다."]
@@ -719,7 +726,7 @@ async function generate() {
   if (state.busy) return;
   if (!state.workspace) return toast("Connect a workspace first.", "error");
   if (!state.configured) return showPage("settings");
-  const target = $("targetFile").value;
+  // No target file input: the model discovers relevant files within environment scope.
   const prompt = $("taskPrompt").value.trim();
   const source_kind = $("requestKind").value;
   const source_ref = $("requestRef").value.trim();
@@ -732,21 +739,23 @@ async function generate() {
   if (prompt.length < 5) { $("taskPrompt").focus(); return toast("Describe the task in at least 5 characters.", "error"); }
   state.proposal = null;
   renderPreview(); renderReview();
-  setBusy(true, target ? "Claude Code is working..." : "Selecting file and generating...");
+  setBusy(true, "허용된 범위에서 코드 탐색 및 개발 중...");
   setSteps(2);
   showSubmitting(prompt);
   try {
-    const {job} = await request("/api/jobs", {workspace: state.workspace, target, prompt,
+    const {job} = await request("/api/jobs", {workspace: state.workspace, prompt,
       source_kind, source_ref, source_content});
     showRun(job, true);
     const finished = await monitorRun(job.id);
-    if (!["complete", "no_change"].includes(finished.status)) throw new Error(finished.error || "Claude Code job failed");
+    if (!["complete", "no_change", "needs_clarification"].includes(finished.status)) throw new Error(finished.error || "Claude Code job failed");
     state.proposal = (await request("/api/proposal", {id: finished.proposal_id})).proposal;
+    state.previewFile = "";
     changeTab("diff"); renderReview(); await loadHistory();
-    toast(state.proposal.status === "no_change" ?
-      `Claude Code 호출 성공 · 변경 없음 (${state.proposal.target}). 응답 근거를 확인하세요.` :
-      `Target: ${state.proposal.target}. Review the Diff before applying.`,
-      state.proposal.status === "no_change" ? "info" : "success");
+    toast(state.proposal.status === "needs_clarification" ?
+      "Claude Code가 추가 설명을 요청했습니다. 대화 패널을 확인하세요." :
+      state.proposal.status === "no_change" ? "Claude Code 호출 성공 · 변경 없음. 응답 근거를 확인하세요." :
+      `변경 파일 ${state.proposal.changed_files?.length || 0}개 · Diff를 검토한 후 승인하세요.`,
+      ["no_change", "needs_clarification"].includes(state.proposal.status) ? "info" : "success");
   } catch (err) {
     showRunError(err.message);
     toast(err.message, "error");
@@ -757,14 +766,12 @@ async function generate() {
 
 function retryNoChange() {
   const p = state.proposal;
-  if (!p || p.status !== "no_change" || state.busy) return;
+  if (!p || !["no_change", "needs_clarification"].includes(p.status) || state.busy) return;
   // This always creates a new human request; agent handoff provenance is not impersonated.
   setRequestMode("human");
   $("taskPrompt").value = p.prompt;
-  const option = [...$("targetFile").options].find(x => x.value === p.target);
-  if (option) {
-    $("targetFile").value = p.target;
-    state.target = p.target;
+  if (p.status === "needs_clarification" && p.question) {
+    $("taskPrompt").value = p.prompt + "\n\n추가 설명: ";
   }
   if (p.origin === "agent") {
     $("requestKind").value = "freeform";
@@ -778,7 +785,7 @@ function retryNoChange() {
 async function performAction(action) {
   if (!state.proposal || state.busy) return;
   let question = "";
-  if (action === "apply") question = `다음 파일을 실제로 변경하시겠습니까?\n\n${state.proposal.target}\n\n해당 파일이 워크스페이스에 즉시 반영됩니다.`;
+  if (action === "apply") question = `다음 ${state.proposal.changed_files?.length || 0}개 파일을 실제로 변경하시겠습니까?\n\n${(state.proposal.changed_files || []).join("\n")}\n\n해당 파일이 워크스페이스에 즉시 반영됩니다.`;
   else if (action === "undo") question = "현재 파일을 이번 작업의 적용 전 내용으로 복원하시겠습니까?";
   else question = "이 변경안을 반려하시겠습니까? 원본 파일은 수정되지 않습니다.";
   if (!window.confirm(question)) return;
@@ -810,8 +817,8 @@ async function loadHistory() {
       none.textContent = "아직 실행한 변경 작업이 없습니다. 위에서 첫 요청을 생성해보세요.";
       root.appendChild(none); return;
     }
-    const icons = {review:"≠",no_change:"=",applied:"✓",rejected:"×",undone:"↺"};
-    const names = {review:"REVIEW",no_change:"NO CHANGES",applied:"APPLIED",rejected:"REJECTED",undone:"UNDONE"};
+    const icons = {review:"≠",no_change:"=",needs_clarification:"?",applied:"✓",rejected:"×",undone:"↺"};
+    const names = {review:"REVIEW",no_change:"NO CHANGES",needs_clarification:"NEEDS DETAILS",applied:"APPLIED",rejected:"REJECTED",undone:"UNDONE"};
     for (const item of history) {
       const button = document.createElement("button"); button.type = "button";
       button.className = `history-row ${state.proposal && item.id === state.proposal.id ? "selected" : ""}`;
@@ -876,10 +883,9 @@ async function initialize() {
   $("rejectBtn").addEventListener("click", () => performAction("reject"));
   $("undoBtn").addEventListener("click", () => performAction("undo"));
   $("refreshClaude").addEventListener("click", refreshClaudeStatus);
-  $("targetFile").addEventListener("change", event => {
-    state.target = event.target.value;
-    state.proposal = null;
-    renderPreview(); renderReview(); loadHistory();
+  $("reviewFileSelect").addEventListener("change", event => {
+    state.previewFile = event.target.value;
+    renderPreview();
   });
   document.querySelectorAll("[data-tab]").forEach(el => el.addEventListener("click",() => changeTab(el.dataset.tab)));
   $("taskPrompt").value = "";

@@ -186,3 +186,14 @@
 .scope-feedback{margin:8px 0 0;font-size:11px;line-height:1.65;color:#596c87;overflow-wrap:anywhere}
 .scope-feedback.warning{color:#92672c;font-weight:600}
 .settings-scan-feedback{padding:8px 0 12px;margin:0 0 10px;border-bottom:1px solid #eef0f5}
+
+/* Scope-driven development: the human request has no target picker. */
+.scope-auto-note{border:1px solid #d9dff5;border-radius:10px;background:#f8f9ff;padding:13px 14px;margin:4px 0;color:#3f4e71}
+.scope-auto-note strong{display:block;font-size:12px;margin-bottom:5px}
+.scope-auto-note p{font-size:12px;line-height:1.65;margin:0;color:#586780}
+.review-files-bar{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid #e6eaf3;min-width:0}
+.review-files-bar label{font-weight:700;color:#57647f;font-size:11px;white-space:nowrap}
+.review-files-bar select{width:100%;min-width:0;max-width:580px;border:1px solid #cad3e6;border-radius:7px;padding:8px;font:inherit;font-size:12px;background:#fff;color:#3f4e68}
+.review-files-bar .review-file-count{color:#76829a;white-space:nowrap;font-size:11px}
+.review-files-bar.hidden{display:none}
+@media(max-width:600px){.review-files-bar{flex-wrap:wrap}.review-files-bar select{order:2;flex-basis:100%}}

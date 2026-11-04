@@ -49,10 +49,12 @@ if os.environ.get('AX_FAKE_CLAUDE_BAD'):
     print('invalid response')
     sys.exit(0)
 schema = json.loads(args[args.index('--json-schema') + 1])
-if 'target' in schema.get('properties', {{}}):
+if 'targets' in schema.get('properties', {{}}):
     paths = json.loads(task.split('Allowlisted relative paths (filenames only; no source contents yet):\\n',1)[1].split('\\nReturn target',1)[0])
     target = os.environ.get('AX_FAKE_CLAUDE_TARGET', paths[0])
-    proposal = {{'target': target, 'reason':'mock selection'}}
+    targets = json.loads(os.environ['AX_FAKE_CLAUDE_TARGETS']) if os.environ.get('AX_FAKE_CLAUDE_TARGETS') else ([target] if target else [])
+    proposal = {{'targets': targets, 'reason':'mock selection',
+                'question':'Which charger behavior should I change?'}}
     Path(os.environ['AX_FAKE_CLAUDE_SELECTION_LOG']).write_text(json.dumps({{'paths':paths,'task':task}}))
 else:
     original = task.split('File contents START\\n', 1)[1].rsplit('\\nFile contents END', 1)[0]
@@ -63,6 +65,7 @@ else:
         proposal['summary'] = 'No code changes necessary'
         proposal['rationale'] = os.environ.get('AX_FAKE_CLAUDE_RATIONALE', 'The requested behavior is already present in the current file.')
 print(json.dumps({{'type':'system' ,'subtype':'init','model':'mock-claude'}}),flush=True)
+print(json.dumps({{'type':'assistant','message':{{'content':[{{'type':'text','text':'I am examining the permitted file paths.'}}, {{'type':'thinking','thinking':'PRIVATE REASONING SHOULD NOT APPEAR'}}]}}}}),flush=True)
 print(json.dumps({{'type':'stream_event','event':{{'delta':{{'type':'thinking_delta','thinking':'hidden reasoning'}}}}}}),flush=True)
 print(json.dumps({{'type':'stream_event','event':{{'delta':{{'type':'text_delta','text':'PRIVATE SOURCE SHOULD NOT APPEAR IN LOG'}}}}}}),flush=True)
 import time
@@ -99,6 +102,7 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
         os.environ.pop('AX_FAKE_CLAUDE_FAIL', None)
         os.environ.pop('AX_FAKE_CLAUDE_BAD', None)
         os.environ.pop('AX_FAKE_CLAUDE_TARGET', None)
+        os.environ.pop('AX_FAKE_CLAUDE_TARGETS', None)
         os.environ.pop('AX_FAKE_CLAUDE_DELAY', None)
         os.environ.pop('AX_FAKE_CLAUDE_UNCHANGED', None)
         os.environ.pop('AX_FAKE_CLAUDE_RATIONALE', None)
@@ -141,7 +145,7 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
             status, data = self.api('/api/jobs/' + ident)
             self.assertEqual(status, 200, data)
             job = data['job']
-            if job['status'] in {'complete', 'no_change', 'failed'}:
+            if job['status'] in {'complete', 'no_change', 'needs_clarification', 'failed'}:
                 return job
             time.sleep(0.12)
         self.fail('Job did not finish before deadline')
@@ -194,8 +198,8 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
                     os.environ['AX_FAKE_CLAUDE_TARGET'] = selected
                     status, data = self.api('/api/propose', {
                         'workspace':str(ax.SAMPLE), 'prompt':'충전 전류 입력을 검증해줘.'})
-                    self.assertEqual(status, 422, data)
-                    self.assertIn('선택', data['error'])
+                    self.assertEqual(status, 200 if not selected else 422, data)
+                    if not selected: self.assertEqual(data['proposal']['status'], 'needs_clarification')
                     self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
         finally:
             second.unlink(missing_ok=True)
@@ -236,8 +240,8 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
             with patch.object(ax, 'MAX_AUTO_TARGET_FILES', 1):
                 status, data = self.api('/api/propose', {
                     'workspace':str(ax.SAMPLE), 'prompt':'충전 전류 입력을 검증해줘.'})
-                self.assertEqual(status, 422, data)
-                self.assertIn('최대 1개', data['error'])
+                self.assertEqual(status, 200, data)
+                self.assertEqual(data['proposal']['status'], 'needs_clarification')
                 self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
         finally:
             second.unlink(missing_ok=True)
@@ -556,7 +560,7 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
         self.assertIn('system', roles)
         text = '\n'.join(e['text'] for e in job['events'])
         self.assertIn('Please validate charger', text)
-        self.assertIn('Summary: Claude Code CLI mock', text)
+        self.assertIn('요약: Claude Code CLI mock', text)
         self.assertIn('mock-claude', text)
         self.assertNotIn('PRIVATE SOURCE SHOULD NOT APPEAR', text)
         self.assertNotIn('hidden reasoning', text)
@@ -667,7 +671,7 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
         transcript = '\n'.join(e['text'] for e in job['events'])
         self.assertIn('Claude Code 호출 성공', transcript)
         self.assertIn('pre-existing input handling is sufficient', transcript)
-        self.assertIn('수정 대상 파일: '+self.target, transcript)
+        self.assertIn('수정 범위: '+self.target, transcript)
         self.assertNotIn('SPDX-License-Identifier', transcript)
         self.assertNotIn('PRIVATE SOURCE SHOULD NOT APPEAR', transcript)
         proposal = self.api('/api/proposal', {'id':job['proposal_id']})[1]['proposal']
@@ -744,6 +748,102 @@ print(json.dumps({{'type':'result', 'is_error':bool(os.environ.get('AX_FAKE_CLAU
                 self.assertEqual(saved['editable_files'], 1)
                 self.assertFalse(saved['scan']['truncated'])
 
+
+
+    def test_40_automatic_multi_file_proposal_review_apply_and_undo(self):
+        second = SAMPLE_FILE.with_name('ax_ifpmic_extra.c')
+        original_other = 'int other(void) { return 0; }\n'
+        second.write_text(original_other)
+        try:
+            os.environ['AX_FAKE_CLAUDE_TARGETS'] = json.dumps([self.target, 'drivers/power/supply/ax_ifpmic_extra.c'])
+            status, data = self.api('/api/propose', {
+                'workspace': str(ax.SAMPLE), 'prompt': 'Update the charger and related helper drivers.'})
+            self.assertEqual(status, 200, data)
+            proposal = data['proposal']
+            self.assertEqual(proposal['status'], 'review')
+            self.assertEqual(proposal['file_count'], 2)
+            self.assertEqual(len(proposal['changed_files']), 2)
+            self.assertEqual(len(proposal['files']), 2)
+            self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+            self.assertEqual(second.read_text(), original_other)
+            result = self.api('/api/apply', {'id': proposal['id']})
+            self.assertEqual(result[0], 200, result)
+            self.assertIn('generated by mock CLI', SAMPLE_FILE.read_text())
+            self.assertIn('generated by mock CLI', second.read_text())
+            result = self.api('/api/undo', {'id': proposal['id']})
+            self.assertEqual(result[0], 200, result)
+            self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+            self.assertEqual(second.read_text(), original_other)
+        finally:
+            second.unlink(missing_ok=True)
+
+    def test_41_multi_file_external_change_prevents_all_writes(self):
+        second = SAMPLE_FILE.with_name('ax_ifpmic_extra.c')
+        second.write_text('int other(void) { return 0; }\n')
+        try:
+            os.environ['AX_FAKE_CLAUDE_TARGETS'] = json.dumps([self.target, 'drivers/power/supply/ax_ifpmic_extra.c'])
+            status, data = self.api('/api/propose', {
+                'workspace': str(ax.SAMPLE), 'prompt': 'Update related driver files.'})
+            self.assertEqual(status, 200, data)
+            second.write_text('externally changed\n')
+            code, response = self.api('/api/apply', {'id': data['proposal']['id']})
+            self.assertEqual(code, 409, response)
+            self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+            self.assertEqual(second.read_text(), 'externally changed\n')
+        finally:
+            second.unlink(missing_ok=True)
+
+    def test_42_unspecified_target_is_normal_clarification_not_failure(self):
+        second = SAMPLE_FILE.with_name('ax_ifpmic_extra.c')
+        second.write_text('int other(void) { return 0; }\n')
+        try:
+            os.environ['AX_FAKE_CLAUDE_TARGETS'] = '[]'
+            status, response = self.api('/api/jobs', {
+                'workspace': str(ax.SAMPLE), 'prompt': 'Please inspect the driver.'})
+            self.assertEqual(status, 202, response)
+            result = self.await_job(response['job']['id'])
+            self.assertEqual(result['status'], 'needs_clarification')
+            self.assertEqual(result['cli_status'], 'succeeded')
+            proposal = self.api('/api/proposal', {'id': result['proposal_id']})[1]['proposal']
+            self.assertEqual(proposal['status'], 'needs_clarification')
+            self.assertEqual(proposal['file_count'], 0)
+            self.assertIn('Which charger', proposal['question'])
+            self.assertEqual(self.api('/api/apply', {'id': proposal['id']})[0], 409)
+            self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+            self.assertEqual(second.read_text(), 'int other(void) { return 0; }\n')
+        finally:
+            second.unlink(missing_ok=True)
+
+    def test_43_selected_file_outside_allowlist_is_rejected(self):
+        second = SAMPLE_FILE.with_name('ax_ifpmic_extra.c')
+        second.write_text('int other(void) { return 0; }\n')
+        try:
+            os.environ['AX_FAKE_CLAUDE_TARGETS'] = json.dumps(['../../etc/passwd'])
+            code, response = self.api('/api/propose', {
+                'workspace': str(ax.SAMPLE), 'prompt': 'Please update all charger functions.'})
+            self.assertEqual(code, 422, response)
+            self.assertEqual(SAMPLE_FILE.read_bytes(), self.original)
+        finally:
+            second.unlink(missing_ok=True)
+
+    def test_44_real_assistant_prose_visible_but_thinking_and_code_filtered(self):
+        result = self.api('/api/jobs', {'workspace': str(ax.SAMPLE),
+                         'prompt': 'Please validate charger input range.'})
+        self.assertEqual(result[0], 202, result)
+        job = self.await_job(result[1]['job']['id'])
+        texts = '\n'.join(e['text'] for e in job['events'])
+        self.assertIn('I am examining the permitted file paths.', texts)
+        self.assertIn('Claude Code에 보낸 지시', texts)
+        self.assertNotIn('PRIVATE REASONING SHOULD NOT APPEAR', texts)
+        self.assertNotIn('private source', texts)
+        self.assertNotIn('PRIVATE SOURCE SHOULD NOT APPEAR IN LOG', texts)
+
+    def test_45_human_target_picker_removed_from_gui(self):
+        html = (ROOT / 'web/index.html').read_text()
+        js = (ROOT / 'web/app.js').read_text()
+        self.assertNotIn('id="targetFile"', html)
+        self.assertNotIn('$("targetFile")', js)
+        self.assertIn('id="reviewFileSelect"', html)
 
 if __name__ == '__main__':
     unittest.main()
