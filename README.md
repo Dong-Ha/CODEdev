@@ -1,4 +1,8 @@
-# AX Code-Dev Studio — Claude Code CLI GUI MVP v0.3
+# AX Code-Dev Studio — Claude Code CLI GUI MVP v0.4
+
+![Code-Dev 작업 화면 (샘플 데이터)](preview_code_dev.webp)
+
+![개발 환경 설정 화면 (샘플 데이터)](preview_environment.webp)
 
 AX 워크플로우의 **Code-Dev (코드 생성·수정)** 단계에 사용하는 로컬 웹 GUI입니다. **프로젝트별 개발 환경을 처음 설정한 후 언제든 수정**할 수 있습니다. GUI는 요구사항을 Claude Code CLI에 전달하여 **변경안만 생성**하고, Diff와 체크리스트를 보여준 뒤 사용자가 승인할 때만 로컬 소스를 수정합니다. 실제 빌드·테스트·플래싱은 수행하지 않습니다.
 
@@ -34,7 +38,7 @@ AX_CONFIG_FILE="$HOME/.config/ax-code-dev/profiles.json" python3 app.py
 2. 프로젝트 이름·유형(Linux Kernel / 일반 프로젝트)을 설정합니다.
 3. 빌드 작업 디렉터리, `ARCH`, `CROSS_COMPILE`, **빌드 명령어**, 추가 환경변수를 입력합니다. **실제 실행하는 명령이 아니라 에이전트 참고 문맥**으로만 사용합니다.
 4. 수정 허용/제외 경로 패턴, 변경 목적, 코딩 지침을 입력하고 저장합니다.
-5. **Code-Dev** 페이지에서 파일 1개와 요구사항을 선택합니다. **Claude Code** 또는 예제용 **Demo**를 선택한 뒤 변경안을 생성합니다.
+5. **Code-Dev** 페이지에서 파일 1개와 요구사항을 선택합니다. **Claude Code CLI**로만 변경안을 생성합니다.
 6. **Unified Diff**와 검토 체크리스트를 확인한 뒤 명시적으로 승인해야 파일에 반영됩니다. 반려·되돌리기도 가능합니다.
 7. 개발 환경을 수정하려면 언제든 **개발 환경** 페이지를 열어 재저장합니다. 이전 프로필로 만든 미승인 제안은 서버에서 승인할 수 없게 됩니다.
 
@@ -85,8 +89,8 @@ Claude Code는 GUI 서버와 분리된 **외부 프로그램**입니다. CLI가 
 | `app.py` | 로컬 API, 프로젝트 설정 저장/검증, Claude Code CLI 호출, Diff, 승인·반려·복원 |
 | `agents/code-dev.md` | 단일 Code-Dev 정책과 JSON 출력 계약 |
 | `web/index.html`, `web/app.js`, `web/style.css` | Code-Dev + 개발 환경 설정 GUI |
-| `demo_workspace/` | IFPMIC 충전 드라이버용 변경안 데모 (실제 보드 빌드 불가) |
-| `tests/test_app.py` | 15개 테스트: 환경 설정·경로 정책·승인 흐름·가짜 CLI 연동·오류 처리 |
+| `sample_workspace/` | Claude Code 연동 확인용 IFPMIC 샘플 드라이버 (실제 보드 빌드 불가) |
+| `tests/test_app.py` | 17개 테스트: 환경 설정·경로 정책·승인 흐름·가짜 CLI 연동·오류 처리 |
 
 API: `GET /api/bootstrap`, `/api/claude/status`, `/api/history` · `POST /api/workspace`, `/api/config/save`, `/api/file`, `/api/propose`, `/api/proposal`, `/api/apply`, `/api/reject`, `/api/undo`.
 
@@ -95,8 +99,7 @@ API: `GET /api/bootstrap`, `/api/claude/status`, `/api/history` · `POST /api/wo
 ## 5. 기능 범위와 한계
 
 - **Code-Dev A단계만 지원:** 대상 파일 1개, UTF-8, 64KB 이하. 실제 빌드·테스트·플래싱·배포 기능 없음.
-- **Demo 모드**는 지정 IFPMIC C 파일에 고정된 예시 변경안을 제시하며 외부 AI를 호출하지 않습니다.
-- **Claude Code 모드**는 실제 설치·인증된 CLI가 필요합니다. 테스트는 **모의 CLI**로 진행했으며 실제 Anthropic 계정/모델의 요청 성공은 검증하지 않았습니다.
+- **Claude Code CLI**만 지원하며 실제 설치·인증된 CLI가 필요합니다. 테스트는 **모의 CLI**로 진행했으며 실제 Anthropic 계정/모델의 요청 성공은 검증하지 않았습니다.
 - 사용자 수준 Claude 설정이나 조직 정책을 서버가 자동 검증하지 않습니다. 후속 실무 적용 전 회사 보안 정책, 연결 승인, 데이터 보존 정책을 검토해야 합니다.
 - Git Worktree 격리, 여러 파일 Patch 제안, 함수/범위별 정책, 영구 감사 로그 및 역할별 권한 통제는 아직 미구현입니다.
 
@@ -106,7 +109,7 @@ API: `GET /api/bootstrap`, `/api/claude/status`, `/api/history` · `POST /api/wo
 python3 -m unittest discover -s tests -v
 ```
 
-15개 자동 테스트: 변경안 생성/승인/반려/undo, CSRF와 경로 탈출 차단, 최초 프로필 저장과 영속화, 설정 버전 충돌, 빌드 명령 미실행, 변경 허용 범위, 모의 Claude Code CLI 호출(외부 네트워크 없음), CLI 미설치·오류·출력 파싱 실패 등.
+17개 자동 테스트: 변경안 생성/승인/반려/undo, CSRF와 경로 탈출 차단, 최초 프로필 저장과 영속화, 설정 버전 충돌, 빌드 명령 미실행, 변경 허용 범위, 모의 Claude Code CLI 호출(외부 네트워크 없음), CLI 미설치·오류·출력 파싱 실패 등.
 
 ## 다음 단계
 

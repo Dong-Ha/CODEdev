@@ -15,7 +15,7 @@
       <div class="brand">
         <span class="brand-logo"><span class="brand-angle">⌁</span></span>
         <div><div class="brand-name">AX Studio</div><div class="brand-sub">AGENT WORKSPACE</div></div>
-        <span class="brand-version">v0.3</span>
+        <span class="brand-version">v0.4</span>
       </div>
 
       <div class="nav-section-label">WORKSPACE</div>
@@ -65,7 +65,7 @@
         <section class="stepper" aria-label="작업 단계">
           <div class="step active" id="step1"><div class="step-circle">1</div><div><strong>작업 정의</strong><small>요구사항 · 대상 파일</small></div></div>
           <div class="step-line"></div>
-          <div class="step" id="step2"><div class="step-circle">2</div><div><strong>변경안 생성</strong><small>Claude Code / Demo</small></div></div>
+          <div class="step" id="step2"><div class="step-circle">2</div><div><strong>변경안 생성</strong><small>Claude Code CLI</small></div></div>
           <div class="step-line"></div>
           <div class="step" id="step3"><div class="step-circle">3</div><div><strong>Diff 검토</strong><small>변경 영향 확인</small></div></div>
           <div class="step-line"></div>
@@ -97,7 +97,7 @@
             <div class="panel-content">
               <label for="taskPrompt" class="field-label">DEVELOPMENT INSTRUCTION</label>
               <textarea id="taskPrompt" rows="7" placeholder="예: 충전 전류 설정 함수에서 음수 및 범위 초과 입력을 차단하고 기존 정상 동작은 유지해줘."></textarea>
-              <div class="hint-row"><span><span class="sparkle">✧</span> 구체적인 변경 조건을 입력하세요</span><button class="text-link" type="button" id="fillDemoPrompt">예시 불러오기</button></div>
+              <div class="hint-row"><span><span class="sparkle">✧</span> 구체적인 변경 조건을 입력하세요</span><button class="text-link" type="button" id="fillSamplePrompt">예시 불러오기</button></div>
 
               <div class="divider-soft"></div>
               <label for="targetFile" class="field-label">TARGET FILE <span class="field-required">*</span></label>
@@ -105,11 +105,7 @@
               <div class="field-caption">MVP는 한 번에 파일 1개만 변경합니다.</div>
 
               <div class="divider-soft"></div>
-              <div class="field-label">GENERATION ENGINE</div>
-              <div class="engine-toggle" role="group" aria-label="코드 생성 엔진 선택">
-                <button class="engine-option selected" type="button" data-engine="claude" aria-pressed="true"><span class="engine-sym">◈</span><strong>Claude Code</strong><small>설치된 CLI 연동</small></button>
-                <button class="engine-option" type="button" data-engine="demo" aria-pressed="false"><span class="engine-sym">▣</span><strong>Demo</strong><small>내장 시뮬레이션</small></button>
-              </div>
+              <div class="field-label">CODE GENERATION · CLAUDE CODE ONLY</div>
               <div id="claudeConfig" class="claude-config">
                 <div class="model-row"><span class="field-label">CLAUDE CODE CLI</span><button type="button" class="text-link" id="refreshClaude">상태 다시 확인</button></div>
                 <div id="claudeStatus" class="field-caption">설치 상태 확인 중...</div>
@@ -117,9 +113,9 @@
                 <div class="cloud-disclosure">⚠ Claude Code 호출 시 선택한 소스와 개발 설정이 Anthropic 또는 구성된 AI 제공자에게 전송될 수 있습니다. 사내 코드의 전송 허용 여부를 먼저 확인하세요.</div>
               </div>
 
-              <div class="guardrails"><div class="guardrails-title"><span>♢</span> SAFETY GUARDRAILS</div><div class="guardrail-row"><span>✓</span> 선택한 파일만 변경</div><div class="guardrail-row"><span>✓</span> 적용 전 수동 승인 필수</div><div class="guardrail-row"><span>✓</span> 빌드 / 플래싱 / CLI 도구 실행 제외</div></div>
+              <div class="guardrails"><div class="guardrails-title"><span>♢</span> SAFETY GUARDRAILS</div><div class="guardrail-row"><span>✓</span> 선택한 파일만 변경</div><div class="guardrail-row"><span>✓</span> 적용 전 수동 승인 필수</div><div class="guardrail-row"><span>✓</span> 빌드 / 플래싱 / 코드 편집 도구 실행 제외</div></div>
               <button class="btn btn-primary btn-generate" type="button" id="generateBtn"><span class="btn-sparkle">✦</span><span id="generateText">변경안 생성하기</span><span class="btn-arrow">→</span></button>
-              <div class="submit-note" id="submitNote">코드 파일은 승인 전까지 수정되지 않습니다.</div>
+              <div class="submit-note" id="submitNote">Claude Code CLI에 작업 요청, 설정, 선택한 소스가 전달됩니다. 변경안 승인 전까지 소스는 수정되지 않습니다.</div>
             </div>
           </section>
 
@@ -206,7 +202,7 @@
               <button class="settings-next-button" type="button" id="envBackBtn"><span><strong>Code-Dev 작업 화면으로 이동</strong><small>설정 저장 후 코드 변경안을 생성할 수 있습니다.</small></span><span>→</span></button>
             </aside>
           </div>
-          <footer class="page-footer"><span>AX CODE-DEV · CONFIGURATION v0.3</span><span>Profiles outside repo · Build not executed · Explicit allowlist</span></footer>
+          <footer class="page-footer"><span>AX CODE-DEV · CONFIGURATION v0.4</span><span>Profiles outside repo · Build not executed · Explicit allowlist</span></footer>
         </div>
       </main>
     </div>

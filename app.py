@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 BASE = Path(__file__).resolve().parent
 WEB = BASE / "web"
-DEMO = BASE / "demo_workspace"
+SAMPLE = BASE / "sample_workspace"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("AX_PORT", "8765"))
 MAX_FILE_BYTES = 64 * 1024
@@ -51,7 +51,7 @@ PROJECT_TYPES = {"linux-kernel", "generic"}
 
 def default_profile(root: Path) -> dict:
     """First-run form defaults, *not* a saved/authorized configuration."""
-    kernel = root == DEMO.resolve() or (root / "drivers" / "power" / "supply").is_dir()
+    kernel = root == SAMPLE.resolve() or (root / "drivers" / "power" / "supply").is_dir()
     return {
         "project_name": root.name,
         "project_type": "linux-kernel" if kernel else "generic",
@@ -362,26 +362,6 @@ def create_diff(path: str, old: str, new: str) -> tuple[list[dict], int, int]:
     return changes, plus, minus
 
 
-def demo_proposal(root: Path, target: str, original: str) -> dict:
-    if root != DEMO.resolve() or target != "drivers/power/supply/ax_ifpmic_charger.c":
-        raise ApiError("데모 엔진은 제공된 IFPMIC 예제 파일만 수정합니다. 실제 프로젝트는 Claude Code 모드를 사용하세요.")
-    old = "    chip->input_current_ma = current_ma;\n    return 0;\n"
-    new = ("    /* Reject invalid requests before updating the cached current. */\n"
-           "    if (current_ma < 0 || current_ma > AX_IFPMIC_INPUT_MAX_MA)\n"
-           "        return -EINVAL;\n\n"
-           "    chip->input_current_ma = current_ma;\n    return 0;\n")
-    if old not in original:
-        raise ApiError("예제 파일이 이미 수정되었습니다. '되돌리기' 후 다시 실행하세요.")
-    return {
-        "summary": "충전 입력 전류의 범위 검증 추가",
-        "rationale": "음수 및 허용 상한을 초과한 값은 캐시 변경 전에 -EINVAL로 거부합니다.",
-        "risk": "낮음 (예제용 추정)",
-        "checks": ["0mA, 최대 허용값, 음수, 최대값 초과 경계조건 확인",
-                   "기존 정상 입력 동작 유지 여부 코드 리뷰", "실제 보드/커널 빌드는 실행하지 않음"],
-        "new_content": original.replace(old, new, 1)
-    }
-
-
 # Claude Code receives task data via stdin only. No repository filesystem permissions
 # are granted; the GUI remains the sole writer after explicit review approval.
 CLAUDE_RESULT_SCHEMA = {
@@ -494,18 +474,16 @@ def propose(body: dict) -> dict:
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str) or not 5 <= len(prompt.strip()) <= 4000:
         raise ApiError("작업 요청은 5~4000자로 작성하세요.")
-    engine = body.get("engine", "claude")
-    if engine not in {"demo", "claude"}:
-        raise ApiError("지원하지 않는 에이전트 모드입니다.")
-    result = demo_proposal(root, str(target), original) if engine == "demo" else \
-             call_claude(prompt, str(target), original, profile)
+    if body.get("engine", "claude") != "claude":
+        raise ApiError("Claude Code만 지원합니다.")
+    result = call_claude(prompt, str(target), original, profile)
     summary, rationale, risk, checks, revised = validate_result(result, original)
     diff, plus, minus = create_diff(str(target), original, revised)
     if not plus and not minus:
         raise ApiError("공백이나 줄바꿈을 포함한 실제 변경이 없습니다.", 422)
     p = {"id": secrets.token_hex(5), "workspace": str(root), "target": str(target),
          "config_revision": profile["revision"],
-         "engine": engine, "prompt": prompt.strip(), "summary": summary,
+         "engine": "claude", "prompt": prompt.strip(), "summary": summary,
          "rationale": rationale, "risk": risk, "checks": checks, "plus": plus, "minus": minus,
          "status": "review", "created_at": timestamp(), "original": original,
          "original_hash": sha(original), "new_content": revised, "new_hash": sha(revised),
@@ -572,7 +550,7 @@ def change_status(body: dict, action: str) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AXCodeDevMVP/0.3"
+    server_version = "AXCodeDevMVP/0.4"
     def _headers(self, status: int, mime: str = "application/json; charset=utf-8", length: int = 0):
         self.send_response(status)
         self.send_header("Content-Type", mime)
@@ -610,10 +588,10 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         if route == "/api/bootstrap":
             store = read_store()
-            return self._json(200, {"ok": True, "token": CSRF, "demo_path": str(DEMO.resolve()),
+            return self._json(200, {"ok": True, "token": CSRF, "sample_path": str(SAMPLE.resolve()),
                                     "last_workspace": store.get("last_workspace", ""),
                                     "config_file": str(CONFIG_FILE),
-                                    "version": "0.3.0", "limitations": {"max_file_kb": 64}})
+                                    "version": "0.4.0", "limitations": {"max_file_kb": 64}})
         if route == "/api/claude/status":
             return self._json(200, {"ok": True, **claude_status()})
         if route == "/api/history":
@@ -659,7 +637,7 @@ class Handler(BaseHTTPRequestHandler):
                                         "total_files": len(all_files),
                                         "configured": profile is not None,
                                         "config": profile if profile else default_profile(root),
-                                        "is_demo": root == DEMO.resolve()})
+                                        "is_sample": root == SAMPLE.resolve()})
             if route == "/api/config/save":
                 root = resolve_workspace(body.get("workspace"))
                 profile = save_profile(root, body.get("config"), body.get("expected_revision"))
@@ -695,9 +673,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev GUI MVP 0.3.0")
+    print("AX Code-Dev GUI MVP 0.4.0")
     print(f"Open: http://{HOST}:{PORT}")
-    print(f"Demo workspace: {DEMO.resolve()}")
+    print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")
     print(f"Claude Code CLI: {'available' if claude_status()['installed'] else 'not found'}")
     print("Note: Claude Code may transmit selected source/configuration to Anthropic or your configured provider.")
