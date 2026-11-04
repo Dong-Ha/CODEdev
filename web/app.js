@@ -24,6 +24,9 @@ const state = {
   lastEventSeq: 0,
 };
 const $ = (id) => document.getElementById(id);
+const EDITABLE_FILES_PAGE_SIZE = 40;
+const editableBrowserState = { code: { shown: EDITABLE_FILES_PAGE_SIZE }, env: { shown: EDITABLE_FILES_PAGE_SIZE } };
+
 const SAMPLE_PROMPT = "IFPMIC 충전 입력 전류 설정 함수에서 음수 및 최대 허용값 초과 입력을 차단하고, 정상 범위의 기존 동작을 유지해줘.";
 const PROFILE_FIELDS = {
   project_name: "envProjectName", project_type: "envProjectType", build_dir: "envBuildDir",
@@ -201,6 +204,79 @@ function scanNeedsAttention(scan) {
   return Boolean(scan && (scan.truncated || (!scan.editable_files) || (scan.missing_paths || []).length));
 }
 
+// The workspace API already returns the complete discovered allowlisted file
+// manifest (up to the server's scan budget). Display paths, not source text.
+function renderEditableFileBrowser(kind, stale = false) {
+  const prefix = kind === "env" ? "env" : "code";
+  const panel = $(`${prefix}EditablePanel`);
+  const files = Array.isArray(state.files) ? state.files : [];
+  const show = state.configured && files.length > 0 && !stale;
+  panel.classList.toggle("hidden", !show);
+  if (!show) return;
+
+  $(`${prefix}EditableTotal`).textContent = `${files.length.toLocaleString("ko-KR")}개`;
+  const search = $(`${prefix}EditableSearch`).value.trim().toLocaleLowerCase();
+  const matches = files.filter(f => f.path.toLocaleLowerCase().includes(search))
+    .sort((a, b) => a.path.localeCompare(b.path, "ko"));
+  const shown = Math.min(editableBrowserState[kind].shown, matches.length);
+  $(`${prefix}EditableMatches`).textContent = search
+    ? `검색 결과 ${matches.length.toLocaleString("ko-KR")}개`
+    : `${shown.toLocaleString("ko-KR")} / ${files.length.toLocaleString("ko-KR")}개 표시`;
+  const list = $(`${prefix}EditableList`);
+  list.replaceChildren();
+  if (!matches.length) {
+    const row = document.createElement("li");
+    row.className = "editable-files-empty";
+    row.textContent = "검색 결과가 없습니다. 다른 파일명이나 경로로 검색해 보세요.";
+    list.appendChild(row);
+  } else {
+    const fragment = document.createDocumentFragment();
+    for (const file of matches.slice(0, shown)) {
+      const row = document.createElement("li");
+      row.className = "editable-files-row";
+      const path = document.createElement("code");
+      path.textContent = file.path; // Never interpret repository filenames as HTML.
+      path.title = file.path;
+      const size = document.createElement("span");
+      size.className = "editable-files-size";
+      size.textContent = file.size >= 1024 ? `${(file.size / 1024).toFixed(1)} KB` : `${file.size} B`;
+      row.append(path, size);
+      fragment.appendChild(row);
+    }
+    list.appendChild(fragment);
+  }
+  const more = $(`${prefix}EditableMore`);
+  more.classList.toggle("hidden", shown >= matches.length);
+  more.textContent = `다음 ${Math.min(EDITABLE_FILES_PAGE_SIZE, matches.length - shown)}개 보기`;
+  $(`${prefix}EditableFooter`).textContent = search
+    ? `${matches.length.toLocaleString("ko-KR")}개 중 ${shown.toLocaleString("ko-KR")}개 · 검색 결과만 표시`
+    : `Project Root 기준 · 전체 ${files.length.toLocaleString("ko-KR")}개 중 ${shown.toLocaleString("ko-KR")}개 표시`;
+  const warning = $(`${prefix}EditableWarning`);
+  warning.classList.toggle("hidden", !state.scan?.truncated);
+  warning.textContent = state.scan?.truncated
+    ? `탐색 제한으로 일부 파일만 표시할 수 있습니다. ${state.scan.limit_reason || "수정 허용 경로를 좁혀 주세요."}` : "";
+}
+
+function resetEditableFileBrowsers() {
+  for (const kind of ["code", "env"]) {
+    editableBrowserState[kind].shown = EDITABLE_FILES_PAGE_SIZE;
+    $(`${kind}EditableSearch`).value = "";
+  }
+}
+
+function setupEditableFileBrowserEvents() {
+  for (const kind of ["code", "env"]) {
+    $(`${kind}EditableSearch`).addEventListener("input", () => {
+      editableBrowserState[kind].shown = EDITABLE_FILES_PAGE_SIZE;
+      renderEditableFileBrowser(kind);
+    });
+    $(`${kind}EditableMore`).addEventListener("click", () => {
+      editableBrowserState[kind].shown += EDITABLE_FILES_PAGE_SIZE;
+      renderEditableFileBrowser(kind);
+    });
+  }
+}
+
 function renderEnvironmentSummary() {
   const data = envFromForm();
   $("envSummaryName").textContent = data.project_name || "프로젝트명 미설정";
@@ -209,18 +285,22 @@ function renderEnvironmentSummary() {
   $("envSummaryBuildDir").textContent = data.build_dir || ".";
   $("envSummaryCommand").textContent = data.build_command || "명령어를 입력하세요.";
   $("envSummaryScope").textContent = data.editable_paths || "경로 패턴을 입력하세요.";
-  const dirty = JSON.stringify(data) !== state.configBase || $("envWorkspacePath").value.trim() !== state.workspace;
+  const rootChanged = $("envWorkspacePath").value.trim() !== state.workspace;
+  const scopeChanged = rootChanged || data.editable_paths !== (state.config?.editable_paths || "") ||
+    data.blocked_paths !== (state.config?.blocked_paths || "");
+  const dirty = JSON.stringify(data) !== state.configBase || rootChanged;
   $("envUnsaved").textContent = !state.configured ? "초기 환경 설정이 필요합니다" :
     dirty ? "변경사항 미저장 · 저장 후 적용" : "모든 설정 저장됨";
   $("envUnsaved").classList.toggle("unsaved", dirty || !state.configured);
   $("envSummaryConfig").textContent = !state.configured ? "아직 설정되지 않은 프로젝트" :
     dirty ? "현재 입력은 저장되지 않았습니다" : "저장된 프로젝트 프로필";
-  $("envSummaryFiles").textContent = !state.configured || dirty ? "저장 후 계산" :
+  $("envSummaryFiles").textContent = !state.configured || scopeChanged ? "저장 후 계산" :
     `${state.files.length}개 파일`;
-  $("envScanStatus").textContent = !state.configured || dirty
+  $("envScanStatus").textContent = !state.configured || scopeChanged
     ? "경로를 저장하면 Project Root 아래에서 허용 파일을 우선 탐색합니다."
     : formatScanStatus(state.scan);
-  $("envScanStatus").classList.toggle("warning", state.configured && !dirty && scanNeedsAttention(state.scan));
+  $("envScanStatus").classList.toggle("warning", state.configured && !scopeChanged && scanNeedsAttention(state.scan));
+  renderEditableFileBrowser("env", scopeChanged);
 }
 
 function populateEnvironment(data) {
@@ -503,11 +583,13 @@ async function connectWorkspace(pathOverride = null, keepSettings = false) {
     state.workspace = data.path;
     state.files = data.files;
     state.scan = data.scan || null;
+    resetEditableFileBrowsers();
     state.proposal = null;
     $("workspaceScanStatus").textContent = formatScanStatus(state.scan);
     $("workspaceScanStatus").classList.toggle("warning", scanNeedsAttention(state.scan));
     $("workspaceInput").value = data.path;
     populateEnvironment(data);
+    renderEditableFileBrowser("code");
     $("workspacePill").textContent = data.configured ? "CONFIGURED" : "SETUP REQUIRED";
     $("workspacePill").classList.add("online");
     $("branchValue").textContent = data.branch;
@@ -863,6 +945,7 @@ async function initialize() {
   $("envBackBtn").addEventListener("click", () => showPage("code"));
   $("envLoadWorkspace").addEventListener("click", () => connectWorkspace($("envWorkspacePath").value, true));
   $("envSaveBtn").addEventListener("click", saveEnvironment);
+  setupEditableFileBrowserEvents();
   $("envRestoreBtn").addEventListener("click", () => {
     if (!state.config) return;
     for (const [key, id] of Object.entries(PROFILE_FIELDS)) $(id).value = state.config[key] || "";
@@ -873,7 +956,7 @@ async function initialize() {
   $("envTemplateKernel").addEventListener("click", () => applyEnvironmentTemplate("kernel"));
   $("envTemplateGeneric").addEventListener("click", () => applyEnvironmentTemplate("generic"));
   document.querySelectorAll("#settingsView input, #settingsView textarea, #settingsView select")
-    .forEach(el => el.addEventListener("input", renderEnvironmentSummary));
+    .forEach(el => { if (el.id !== "envEditableSearch") el.addEventListener("input", renderEnvironmentSummary); });
   $("generateBtn").addEventListener("click", generate);
   $("runConsoleToggle").addEventListener("click", () => {
     toggleRunConsole($("runConsoleBody").classList.contains("hidden"));
