@@ -1,6 +1,9 @@
 """Exercise network authorities and CSRF over a real HTTP connection."""
 import http.client
 import json
+import select
+import socket
+import socketserver
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -70,6 +73,66 @@ class NetworkAccessTest(unittest.TestCase):
     def test_specific_bind_address_is_allowed(self):
         self.context.update(HOST="192.168.1.51", ALLOWED_HOSTS=set())
         self.assertEqual(self.request(f"192.168.1.51:{self.port}")[0], 200)
+
+
+class PortForwardingTest(unittest.TestCase):
+    def test_tcp_forward_preserves_windows_host_for_gui_and_api(self):
+        """Model WindowsIP:port -> WSLIP:same-port using two loopback addresses."""
+        context = dict(vars(app), HOST="0.0.0.0", ALLOWED_HOSTS={"10.20.30.40"})
+        backend = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(context))
+        port = backend.server_port
+
+        class Forwarder(socketserver.BaseRequestHandler):
+            def handle(self):
+                with socket.create_connection(backend.server_address, timeout=3) as upstream:
+                    peers = (self.request, upstream)
+                    while True:
+                        readable, _, _ = select.select(peers, [], [], 3)
+                        if not readable:
+                            return
+                        for source in readable:
+                            data = source.recv(65536)
+                            if not data:
+                                return
+                            destination = upstream if source is self.request else self.request
+                            destination.sendall(data)
+
+        proxy = socketserver.ThreadingTCPServer(("127.0.0.2", port), Forwarder)
+        proxy.daemon_threads = True
+        threads = [threading.Thread(target=server.serve_forever, daemon=True)
+                   for server in (backend, proxy)]
+        for thread in threads:
+            thread.start()
+        try:
+            host = f"10.20.30.40:{port}"
+            for path in ("/", "/app.js", "/api/bootstrap"):
+                connection = http.client.HTTPConnection("127.0.0.2", port, timeout=3)
+                try:
+                    connection.request("GET", path, headers={"Host": host})
+                    response = connection.getresponse()
+                    body = response.read()
+                    self.assertEqual(response.status, 200)
+                    if path == "/api/bootstrap":
+                        token = json.loads(body)["token"]
+                finally:
+                    connection.close()
+            connection = http.client.HTTPConnection("127.0.0.2", port, timeout=3)
+            try:
+                connection.request("POST", "/api/not-a-route", body="{}", headers={
+                    "Host": host, "Origin": f"http://{host}",
+                    "Content-Type": "application/json", "X-AX-Token": token,
+                })
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 404)  # Passed Host/Origin/CSRF, no writes.
+            finally:
+                connection.close()
+        finally:
+            for server in (proxy, backend):
+                server.shutdown()
+                server.server_close()
+            for thread in threads:
+                thread.join()
 
 
 class ServerArgumentsTest(unittest.TestCase):

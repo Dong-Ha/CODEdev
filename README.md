@@ -15,47 +15,72 @@ python3 app.py
 
 Windows 브라우저: **http://127.0.0.1:8765**
 
-## WSL에서 Windows IP로 접속
+## 사내망 Windows IP → 포트 전달 → WSL 사이트
 
-기본 실행은 localhost 전용입니다. Windows의 LAN IPv4 주소가 `192.168.1.50`이라면 WSL에서 다음과 같이 실행합니다. 주소는 Windows `ipconfig`의 실제 IPv4 주소로 바꾸세요.
+지원하는 접속 구조는 **사내 PC의 브라우저 → Windows 사내망 IPv4:8765 → Windows portproxy → WSL2 NAT IPv4:8765 → CODEdev**입니다. Windows와 WSL이 같은 IP를 쓰는 구성이 아니며, 앱 실행 옵션만으로 Windows 포트 전달이 생성되지는 않습니다.
+
+### 1. WSL에서 서버 실행
+
+Windows `ipconfig`에 표시되는 **사내망 어댑터의 IPv4 주소**가 `10.20.30.40`인 예시입니다. 아래 모든 명령에서 실제 주소로 바꾸세요. 공인 IP나 WSL IP를 `--allow-host`에 넣지 않습니다.
 
 ```bash
-python3 app.py --host 0.0.0.0 --allow-host 192.168.1.50
+git pull origin main
+python3 app.py --host 0.0.0.0 --port 8765 --allow-host 10.20.30.40
 ```
 
-접속 주소: **http://192.168.1.50:8765** (`0.0.0.0`은 서버 바인딩 주소이며 브라우저 접속 주소가 아닙니다). localhost 접속도 계속 지원합니다. 화면의 서버 상태에는 실제 접속 주소가 표시됩니다.
+`0.0.0.0`은 WSL 서버의 바인딩 주소입니다. 브라우저에는 **http://10.20.30.40:8765**를 입력합니다. 기본 `python3 app.py` 실행은 계속 localhost 전용이며, localhost 접속도 유지됩니다.
 
-- `--port 9000`: 포트 변경 (기본값: `AX_PORT` 또는 8765).
-- `--allow-host`: 접속에 사용할 IP/호스트 이름만 지정, 포트·URL 제외. 여러 주소는 옵션을 반복합니다.
-- 환경변수로도 지정 가능: `AX_HOST=0.0.0.0 AX_ALLOWED_HOSTS=192.168.1.50,dev-pc python3 app.py`.
-- 기본 localhost 외에는 지정한 바인딩 주소와 허용 호스트만 받습니다. 와일드카드 호스트 허용은 지원하지 않으며 Origin과 CSRF 검증도 유지합니다.
+### 2. Windows에서 포트 전달 설정
 
-**WSL2 기본 NAT 모드:** 앱 설정 외에 Windows 포트 전달이 필요합니다. **관리자 PowerShell**에서 실행하세요. `Ubuntu`는 `wsl -l -q`에 표시되는 실제 배포판 이름으로, Windows IP와 포트도 실행 설정에 맞게 바꿉니다.
+**관리자 PowerShell**을 열고 저장소 폴더로 이동합니다. 저장소가 WSL에만 있다면 WSL에서 `wslpath -w "$PWD"`로 Windows 경로를 확인한 후 PowerShell에서 `Set-Location '해당 경로'`를 실행하세요. `wsl.exe -l -q`로 서버를 실행 중인 배포판 이름을 확인합니다.
 
 ```powershell
-$Distro = "Ubuntu"
-$WindowsIp = "192.168.1.50"
-$Port = 8765
-$WslIp = ((wsl.exe -d $Distro hostname -I).Trim() -split '\s+')[0]
-netsh interface portproxy add v4tov4 listenaddress=$WindowsIp listenport=$Port connectaddress=$WslIp connectport=$Port
-New-NetFirewallRule -Name "CODEdev-$Port" -DisplayName "CODEdev $Port" -Direction Inbound -Action Allow -Protocol TCP -LocalAddress $WindowsIp -LocalPort $Port -RemoteAddress LocalSubnet -Profile Private
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\wsl-port-forward.ps1 -WindowsIp 10.20.30.40 -Distro Ubuntu
 ```
 
-`hostname -I`에 여러 IP가 나오면 실제 WSL NAT 어댑터의 IPv4 주소를 `$WslIp`로 지정하세요. WSL 재시작으로 IP가 바뀌면 포트 전달 명령을 다시 실행합니다. 방화벽 규칙은 처음 한 번만 추가하며, 다른 기기에서는 Windows 네트워크가 Private인지 확인하세요. Windows IP가 바뀌면 앱의 `--allow-host`와 Windows 설정도 갱신합니다.
+`Ubuntu`도 실제 배포판 이름으로 바꿉니다. `-ExecutionPolicy Bypass`는 이 PowerShell 프로세스에만 적용되며 시스템 실행 정책은 변경하지 않습니다.
 
-설정 확인 및 해제 (관리자 PowerShell, 위 변수 사용):
+스크립트는 다음을 순서대로 수행합니다.
+
+1. Windows IP가 해당 PC에 할당되어 있는지 확인합니다.
+2. 지정한 WSL 배포판에서 Windows IP로 향하는 경로의 source IPv4를 찾습니다. Docker/VPN 주소가 섞일 수 있는 `hostname -I`의 첫 주소를 임의로 선택하지 않습니다. 필요하면 `-WslIp 172.20.10.2`로 지정할 수 있습니다.
+3. Windows IP를 Host로 사용해 WSL `/api/bootstrap`에 직접 연결합니다. 서버 미실행·바인딩 오류·Host 403을 포트 전달 전에 확인합니다. 진단 요청은 HTTP 프록시를 사용하지 않습니다.
+4. IP Helper 서비스를 시작하고 **지정한 Windows IP:포트 → WSL IP:동일 포트**의 TCP 포트 전달을 생성·갱신합니다.
+5. 해당 Windows IP·TCP 포트의 인바운드 방화벽 규칙을 생성·갱신합니다. **Domain/Private/Public 모두** 적용하고 `LocalSubnet`으로 제한하지 않아 사내 다른 서브넷도 허용합니다. 방화벽 전체를 끄지는 않습니다.
+6. Windows IP의 `/api/bootstrap`에 다시 연결하여 전달 경로를 확인합니다. 토큰이나 소스 내용은 출력하지 않습니다.
+
+정상 완료 시 `PASS: Windows ... -> WSL ... -> CODEdev`가 표시됩니다. 이후 같은 Windows PC와 다른 사내 PC에서 **http://10.20.30.40:8765**를 엽니다. 로컬 진단 성공만으로 다른 사내 PC에서의 접근까지 보장하지는 않으며, 회사의 중앙 방화벽/GPO/망 분리 정책에 따라 차단될 수 있습니다.
+
+### 확인·갱신·해제
 
 ```powershell
-netsh interface portproxy show v4tov4
-Test-NetConnection $WindowsIp -Port $Port
-# 접속 허용을 끝낼 때만 실행
-netsh interface portproxy delete v4tov4 listenaddress=$WindowsIp listenport=$Port
-Remove-NetFirewallRule -Name "CODEdev-$Port"
+# 현재 포트 전달/방화벽 설정과 Windows IP의 HTTP 응답 확인
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\wsl-port-forward.ps1 -WindowsIp 10.20.30.40 -Action Status
+
+# WSL 재시작 등으로 NAT IP가 바뀌면 Setup을 다시 실행 (동일 규칙 갱신)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\wsl-port-forward.ps1 -WindowsIp 10.20.30.40 -Distro Ubuntu
+
+# 이 Windows IP:포트의 전달과 스크립트가 만든 방화벽 규칙만 삭제
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\wsl-port-forward.ps1 -WindowsIp 10.20.30.40 -Action Remove
 ```
 
-**이미 mirrored 모드를 사용하는 경우:** NAT용 portproxy는 필요하지 않습니다. Windows/Hyper-V 방화벽에서 해당 포트를 허용해야 할 수 있습니다. Microsoft 공식 [WSL 네트워킹 안내](https://learn.microsoft.com/en-us/windows/wsl/networking)를 참고하세요.
+포트를 바꾸면 앱의 `--port`와 스크립트의 `-Port`에 **같은 포트**를 지정합니다. Windows IP가 바뀌면 이전 IP 설정을 `Remove`로 해제하고 새 IP로 서버와 `Setup`을 실행합니다.
 
-**네트워크 접근 권한:** GUI에는 별도 로그인 인증이 없습니다. 접속 가능한 사용자는 소스 열람·변경 승인 등 로컬 사용자와 같은 작업을 할 수 있으므로 신뢰하는 네트워크에서만 사용하세요. `--allow-host`는 접속 URL 검증이며 클라이언트 IP 접근제어가 아닙니다. 인터넷 공유기 포트 개방은 하지 마세요.
+| 실패 지점 | 확인할 항목 |
+| --- | --- |
+| `WSL backend probe failed` | 해당 배포판에서 서버 실행 여부, `--host 0.0.0.0`, 동일 포트, `--allow-host`의 Windows IP, WSL 방화벽 |
+| backend probe의 HTTP 403 | `--allow-host`의 Windows IP가 스크립트의 `-WindowsIp`와 일치하는지 |
+| Windows endpoint probe 실패 | 기존 포트 점유, IP Helper 서비스, portproxy, Windows 유효 방화벽 정책 |
+| Windows에서 PASS지만 다른 사내 PC에서 실패 | 회사 GPO·중앙 방화벽·서브넷 간 접근 정책, 클라이언트 프록시 |
+
+이미 **mirrored 모드**를 사용하는 경우 이 NAT용 스크립트로 포트 전달을 생성하지 않습니다. Microsoft 공식 [WSL 네트워킹 안내](https://learn.microsoft.com/en-us/windows/wsl/networking)를 참고하세요.
+
+### 앱 설정 및 접근 권한
+
+- `--allow-host`: 브라우저 URL의 IP/호스트 이름만 지정하며 포트·URL은 제외합니다. 여러 주소는 옵션을 반복합니다. 지정한 주소와 localhost 외 요청은 차단하며 Origin·CSRF 검증도 유지합니다.
+- 환경변수로도 지정 가능: `AX_HOST=0.0.0.0 AX_ALLOWED_HOSTS=10.20.30.40 python3 app.py`. 포트는 `AX_PORT` 또는 `--port`로 지정합니다 (기본 8765).
+- GUI에 별도 로그인은 없습니다. 노출한 Windows IP:포트로 접근 가능한 사내 사용자는 소스 열람·변경 승인 등의 기능을 사용할 수 있습니다. `--allow-host`는 브라우저의 접속 주소 검증이며 클라이언트 IP 제한이 아닙니다.
+- PowerShell 스크립트에는 Windows 관리자 권한이 필요합니다. 저장소의 파일을 내려받는 것만으로 사용자 PC 설정이 바뀌지 않습니다.
 
 ## 두 가지 사용 방법
 
@@ -88,6 +113,12 @@ Remove-NetFirewallRule -Name "CODEdev-$Port"
 
 ```bash
 python3 -m unittest discover -s tests -v
+```
+
+Windows 포트 전달 스크립트의 설정·갱신·해제 흐름은 Windows 네트워크 명령을 모킹하여 검증합니다 (PowerShell 7+, 실제 네트워크 설정 변경 없음).
+
+```powershell
+pwsh -NoProfile -File tests/test_wsl_port_forward.ps1
 ```
 
 ### Claude Code response timeout
