@@ -102,6 +102,7 @@ GUI GET에는 별도 사용자 로그인/권한 분리가 없습니다. GUI에 �
 | `workspace`, `git_branch` | Project Root, 접수 때 Git 브랜치 |
 | `request` | instruction, source_kind/ref/content, source_agent, upstream_run_id, target |
 | `environment` | 당시 개발·대상 환경, 도구 버전, build_dir/command/env, ARCH/CROSS_COMPILE, 허용·제외 경로, 코딩 규칙, revision |
+| `environment.wiki_link` | 선택 입력한 프로젝트 Wiki URL. 빈 값이면 키 자체를 생략. URL만 전달하며 본문은 자동 조회하지 않음 |
 | `scope.editable_files` | 당시 탐색된 `{path, size}` 목록. 파일 내용은 포함하지 않음 |
 | `scope.scan` | 탐색 통계와 누락 경고. truncated 탐색은 접수 거부 |
 | `scope.read_boundary` | Project Root (향후 실행기의 제한된 참조 읽기 경계) |

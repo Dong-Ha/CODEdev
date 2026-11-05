@@ -84,7 +84,7 @@ REFERENCE_SKIP_DIRS = SKIP_DIRS | {'secrets', 'credentials', 'private_keys', '.s
 PROFILE_FIELDS = {"project_name", "project_type", "build_dir", "architecture",
                   "cross_compile", "build_command", "build_env", "editable_paths",
                   "blocked_paths", "change_notes", "code_guidelines",
-                  "development_environment", "target_environment", "toolchain"}
+                  "development_environment", "target_environment", "toolchain", "wiki_link"}
 PROJECT_TYPES = {"linux-kernel", "generic"}
 
 
@@ -93,6 +93,7 @@ def default_profile(root: Path) -> dict:
     kernel = root == SAMPLE.resolve() or (root / "drivers" / "power" / "supply").is_dir()
     return {
         "project_name": root.name,
+        "wiki_link": "",
         "project_type": "linux-kernel" if kernel else "generic",
         "development_environment": "",
         "target_environment": "",
@@ -253,6 +254,15 @@ def save_profile(root: Path, raw: object, expected_revision: object = None) -> d
         if len(val) > limit or "\x00" in val:
             raise ApiError(f"{key} 입력이 너무 깁니다.")
         config[key] = val.strip()
+    if config["wiki_link"]:
+        try:
+            wiki = urlparse(config["wiki_link"])
+            valid_wiki = (wiki.scheme in {"http", "https"} and bool(wiki.hostname)
+                          and not any(c.isspace() or ord(c) < 32 for c in config["wiki_link"]))
+        except ValueError:
+            valid_wiki = False
+        if not valid_wiki:
+            raise ApiError("Wiki 링크는 http:// 또는 https://로 시작하는 URL을 입력하세요.")
     if not config["project_name"] or not config["build_command"]:
         raise ApiError("프로젝트명과 빌드 명령어는 필수입니다.")
     if config["project_type"] not in PROJECT_TYPES:
@@ -880,6 +890,8 @@ def run_claude_task(task: str, schema: dict | None, on_event=None) -> dict:
 
 def task_context(prompt: str, profile: dict, context: dict | None = None) -> str:
     environment = {k: profile.get(k, "") for k in PROFILE_FIELDS}
+    if not environment["wiki_link"]:
+        environment.pop("wiki_link")
     reference = context or {}
     kind = reference.get("source_kind", "freeform")
     ref = reference.get("source_ref", "")

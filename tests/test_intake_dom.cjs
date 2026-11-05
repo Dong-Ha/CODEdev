@@ -43,6 +43,7 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   fill(dom, 'development_environment', 'Windows 11 + WSL Ubuntu 24.04');
   fill(dom, 'target_environment', 'Android 16 / IFPMIC charger');
   fill(dom, 'build_command', 'make original');
+  fill(dom, 'wiki_link', 'https://wiki.example.com/IFPMIC');
   fill(dom, 'editable_paths', 'drivers/power/supply/ax_ifpmic_charger.c');
   submit(dom, 'environmentForm');
   await until(() => !document.getElementById('goRequest').disabled);
@@ -58,6 +59,8 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   await until(() => !document.getElementById('sample').disabled);
   assert.match(document.getElementById('requestDetail').textContent, /전송 대기/);
   assert.match(document.getElementById('requestDetail').textContent, /make original/);
+  assert.match(document.getElementById('activeProfile').textContent, /https:\/\/wiki.example.com\/IFPMIC/);
+  assert.match(document.getElementById('requestDetail').textContent, /https:\/\/wiki.example.com\/IFPMIC/);
   assert.equal(document.getElementById('requestDetail').querySelector('script'), null);
   assert.match(document.getElementById('requestDetail').textContent, /전달 JSON 다운로드/);
   const count = document.getElementById('queueCount').textContent;
@@ -68,12 +71,13 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   dom.window.close();
 
   dom = await open(); document = dom.window.document;
+  assert.equal(document.getElementById('wiki_link').value, 'https://wiki.example.com/IFPMIC');
   click(dom, 'navQueue');
   await until(() => document.querySelector('.request-item'));
   document.querySelector('.request-item').click();
   await until(() => document.getElementById('requestDetail').textContent.includes('PMIC-123'));
   assert.match(document.getElementById('requestDetail').textContent, /Windows 11/);
-  click(dom, 'navEnvironment'); fill(dom, 'build_command', 'make changed'); click(dom, 'navRequest');
+  click(dom, 'navEnvironment'); fill(dom, 'wiki_link', ''); fill(dom, 'build_command', 'make changed'); click(dom, 'navRequest');
   assert.equal(document.getElementById('requestView').hidden, true);
   submit(dom, 'environmentForm');
   await until(() => !document.getElementById('goRequest').disabled);
@@ -89,6 +93,7 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
     fill(dom, 'instruction', '새 환경에서 입력 전류 검증 방법을 설명해줘.');
     submit(dom, 'requestForm', true);
     await until(() => document.getElementById('requestDetail').textContent.includes('Claude 응답 완료'));
+    assert.doesNotMatch(document.getElementById('requestDetail').textContent, /wiki_link/);
     assert.match(document.querySelector('.cli-response').textContent, /소스 본문이 필요/);
     assert.equal(document.querySelector('.cli-response script'), null);
     assert.match(document.querySelector('.request-item').textContent, /Claude 응답 완료/);
