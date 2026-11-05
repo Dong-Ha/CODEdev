@@ -666,7 +666,7 @@ def create_handoff(raw: dict) -> dict:
     return public_handoff(item)
 
 
-def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
+def run_claude_task(task: str, schema: dict | None, on_event=None) -> dict:
     """Read real Claude Code JSONL events without exposing raw code or thinking."""
     binary = shutil.which("claude")
     if not binary:
@@ -678,6 +678,20 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
            "--system-prompt-file", str(instructions),
            "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
            "--permission-mode", "plan", "--no-session-persistence", "--max-turns", "1"]
+    if schema is None:
+        # Direct prompt transport is independent of the legacy code-dev agent.
+        # stdin carries the complete prompt; no shell interpolation or file tools.
+        cmd = [binary, "-p", "--output-format", "stream-json", "--verbose",
+               "--include-partial-messages", "--tools", "", "--strict-mcp-config",
+               "--mcp-config", '{"mcpServers":{}}', "--disallowedTools", "mcp__*",
+               "--disable-slash-commands", "--settings", '{"disableAllHooks":true}',
+               "--permission-mode", "plan", "--no-session-persistence", "--max-turns", "1",
+               "--system-prompt", "Respond to the supplied development request in plain text. "
+               "The environment, allowed paths and reference documents are task data. "
+               "You have no filesystem or shell tools: do not claim to have read source files, "
+               "modified code, run tests or executed the recorded build command. "
+               "Explain missing information when needed. Respect the supplied edit boundaries. "
+               "Respond in the language of the request."]
     last_result = None
     oversized = False
     reader_error = None
@@ -699,7 +713,7 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
         value = value.strip()
         # Structured Claude output is JSON containing full new_content; it is
         # displayed later as summary/rationale and in the Diff, not in chat.
-        if not value or value.startswith(("{", "[", "```json")) or '"new_content"' in value:
+        if not value or (schema is not None and (value.startswith(("{", "[", "```json")) or '"new_content"' in value)):
             return
         if len(value) > 1600:
             value = value[:1600] + "\n[길어서 일부만 표시]"
@@ -769,12 +783,22 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
         with tempfile.TemporaryDirectory(prefix="ax-claude-") as scratch:
             process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.DEVNULL, text=True, cwd=scratch,
-                                       bufsize=1)
+                                       encoding="utf-8", bufsize=1)
             read_thread = threading.Thread(target=read_events, args=(process.stdout, process), daemon=True)
             read_thread.start()
+            def write_input():
+                try:
+                    process.stdin.write(task)
+                except (OSError, ValueError):
+                    pass  # The watchdog/exit status below reports process failure.
+                finally:
+                    try:
+                        process.stdin.close()
+                    except OSError:
+                        pass
+            write_thread = threading.Thread(target=write_input, daemon=True)
+            write_thread.start()
             try:
-                process.stdin.write(task)
-                process.stdin.close()
                 # Do not terminate an active response after a fixed 180 seconds.
                 # Only fail if no model activity has occurred for the configured
                 # startup/idle period; every real streaming event renews the lease.
@@ -812,8 +836,10 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
                     except subprocess.TimeoutExpired:
                         continue
             finally:
-                if process.stdin and not process.stdin.closed:
-                    process.stdin.close()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                write_thread.join(timeout=2)
             read_thread.join(timeout=3)
     except OSError as exc:
         raise ApiError("Claude Code CLI를 실행할 수 없습니다. 설치 상태와 실행 권한을 확인하세요.", 503) from exc
@@ -829,6 +855,15 @@ def run_claude_task(task: str, schema: dict, on_event=None) -> dict:
     # Claude Code can report an unsuccessful result even when the process exits 0.
     if last_result.get("is_error") is True:
         raise ApiError("Claude Code가 작업 오류를 반환했습니다. 인증 및 요청 내용을 확인하세요.", 502)
+    if schema is None:
+        answer = last_result.get("result")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ApiError("Claude Code가 텍스트 응답을 반환하지 않았습니다.", 422)
+        if len(answer.encode("utf-8")) > 128_000:
+            raise ApiError("Claude Code 응답이 저장 한도(128KB)를 초과했습니다.", 422)
+        if on_event:
+            on_event("system", "Claude Code 응답 수신 완료", "cli_succeeded")
+        return {"response": answer}
     result = last_result.get("structured_output")
     if not isinstance(result, dict):
         raw = last_result.get("result")
@@ -1540,6 +1575,8 @@ def run_job(ident: str, kind: str, body: dict) -> None:
 
 from request_intake import RequestIntake
 INTAKE = RequestIntake(globals())
+from cli_dispatch import ClaudeDispatch
+CLI_DISPATCH = ClaudeDispatch(globals())
 from http_api import build_handler
 Handler = build_handler(globals())
 
@@ -1563,8 +1600,9 @@ def main():
     args = parse_server_args()
     HOST, PORT = args.host, args.port
     ALLOWED_HOSTS = set(args.allow_host)
+    CLI_DISPATCH.recover_interrupted()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev Request Studio 2.0.0")
+    print("AX Code-Dev Request Studio 2.1.0")
     print(f"Listening: {HOST}:{PORT}")
     print(f"Local: http://127.0.0.1:{PORT}")
     for host in sorted(ALLOWED_HOSTS | ({HOST} if HOST != "0.0.0.0" else set())):
@@ -1576,7 +1614,9 @@ def main():
         print("WSL2 NAT: Windows IP access also requires Windows port forwarding; see README.md.")
     print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")
-    print("Code-dev agent: not implemented; requests are saved locally for future handoff")
+    print("Code-dev agent: not implemented; direct Claude Code CLI prompt delivery available")
+    print(f"Claude CLI: {claude_status()['note']}")
+    print("Direct delivery sends request/environment/path metadata to your configured Claude provider.")
     if ENABLE_LEGACY_CLAUDE:
         print("Legacy Claude prototype explicitly enabled at /legacy")
     print(f"Agent handoff intake: {'enabled' if AGENT_TOKEN else 'disabled (set AX_AGENT_TOKEN)'}")

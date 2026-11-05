@@ -34,7 +34,7 @@ function fill(dom, id, value) {
   input.dispatchEvent(new dom.window.Event('input', {bubbles: true}));
 }
 function click(dom, id) { dom.window.document.getElementById(id).click(); }
-function submit(dom, id) { dom.window.document.getElementById(id).dispatchEvent(new dom.window.Event('submit', {bubbles: true, cancelable: true})); }
+function submit(dom, id, send=false) { dom.window.document.getElementById(id).dispatchEvent(new dom.window.SubmitEvent('submit', {bubbles: true, cancelable: true, submitter:id==='requestForm' ? dom.window.document.getElementById(send ? 'submitRequest' : 'saveRequest') : null})); }
 (async () => {
   let dom = await open();
   let document = dom.window.document;
@@ -56,7 +56,7 @@ function submit(dom, id) { dom.window.document.getElementById(id).dispatchEvent(
   submit(dom, 'requestForm');
   await until(() => document.getElementById('requestDetail').textContent.includes('PMIC-123'));
   await until(() => !document.getElementById('sample').disabled);
-  assert.match(document.getElementById('requestDetail').textContent, /Agent 연결 대기/);
+  assert.match(document.getElementById('requestDetail').textContent, /전송 대기/);
   assert.match(document.getElementById('requestDetail').textContent, /Clang 18/);
   assert.equal(document.getElementById('requestDetail').querySelector('script'), null);
   assert.match(document.getElementById('requestDetail').textContent, /전달 JSON 다운로드/);
@@ -83,6 +83,22 @@ function submit(dom, id) { dom.window.document.getElementById(id).dispatchEvent(
   await until(() => document.getElementById('requestDetail').textContent.includes('접수 후 환경 설정이 변경'));
   assert.match(document.getElementById('requestDetail').textContent, /Clang 18/);
   assert.deepEqual(errors, []);
+  if (process.env.AX_TEST_CLI === '1') {
+    // Saved pre-change task is stale; make a new request using the current profile.
+    click(dom, 'navRequest');
+    fill(dom, 'instruction', '새 환경에서 입력 전류 검증 방법을 설명해줘.');
+    submit(dom, 'requestForm', true);
+    await until(() => document.getElementById('requestDetail').textContent.includes('Claude 응답 완료'));
+    assert.match(document.querySelector('.cli-response').textContent, /소스 본문이 필요/);
+    assert.equal(document.querySelector('.cli-response script'), null);
+    assert.match(document.querySelector('.request-item').textContent, /Claude 응답 완료/);
+    await until(() => !document.getElementById('dispatchRequest').disabled);
+    click(dom, 'dispatchRequest');
+    await until(() => document.getElementById('requestDetail').textContent.includes('실행 2/5') && document.getElementById('requestDetail').textContent.includes('Claude 응답 완료'));
+    assert.match(document.getElementById('requestDetail').textContent, /실제 전송한 프롬프트/);
+    assert.match(document.getElementById('requestDetail').textContent, /이전 전송 결과/);
+  }
   dom.window.close();
-  console.log('PASS: environment save, exact file scope, Jira request, safe text rendering, idempotency, reload persistence, unsaved guard, stale snapshot.');
+  assert.deepEqual(errors, []);
+  console.log('PASS: environment save, exact file scope, Jira request, safe text rendering, idempotency, reload persistence, unsaved guard, stale snapshot' + (process.env.AX_TEST_CLI === '1' ? ', direct CLI send, response polling, explicit resend.' : '.'));
 })().catch(error => { console.error(error); process.exit(1); });

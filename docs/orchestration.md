@@ -2,7 +2,7 @@
 
 ## 책임 경계
 
-CODEdev는 **환경 구성 → 요청 정규화 → 환경/수정 허용 파일 스냅샷 저장 → 전달 데이터 조회**를 담당합니다. code-dev agent는 아직 구현되지 않았습니다. 모델 호출, 빌드 실행, 소스 편집, 작업 인수(ack), 결과 반환 API는 이번 기본 흐름에 포함하지 않습니다. 모든 요청은 `waiting_for_agent`로 보관하며, 조회/다운로드로 상태가 바뀌지 않습니다.
+CODEdev는 **환경 구성 → 요청 정규화 → 환경/수정 허용 파일 스냅샷 저장 → 전달 데이터 조회**를 담당합니다. code-dev agent는 아직 구현되지 않았습니다. 접수 API는 실행하지 않고 `waiting_for_agent`로 저장합니다. 별도의 명시적 dispatch API는 Claude Code CLI에 프롬프트를 보내고 응답을 보관합니다. 빌드 실행, 소스 편집 및 미래 code-dev agent의 인수/결과 API는 구현하지 않습니다. 조회/다운로드만으로 실행하지 않습니다.
 
 `agents/code-dev.md`는 기존 Claude 실험 모드용입니다. 새 에이전트를 해당 프롬프트로 이미 구현했다고 해석하지 마세요.
 
@@ -87,11 +87,11 @@ HTTP **202** 응답:
 | `GET /api/agent/requests` | 에이전트 토큰. 요청 목록; workspace와 configuration_stale로 필터링 |
 | `GET /api/agent/requests/{id}` | 에이전트 토큰. 전달 payload 조회. 환경 변경/삭제 시 409 |
 
-GUI GET에는 별도 사용자 로그인/권한 분리가 없습니다. 접속 가능한 사내 사용자가 전체 설정·요청을 볼 수 있는 기존 신뢰 모델을 유지합니다. 에이전트 토큰은 프로젝트별 권한 토큰이 아니며, 설정된 프로젝트 전체에 대해 접수/조회할 수 있습니다.
+GUI GET에는 별도 사용자 로그인/권한 분리가 없습니다. GUI에 접근 가능한 사용자는 서버 사용자의 CLI 인증으로 모델 요청을 실행할 수도 있습니다. 접속 가능한 사내 사용자가 전체 설정·요청을 볼 수 있는 기존 신뢰 모델을 유지합니다. 에이전트 토큰은 프로젝트별 권한 토큰이 아니며, 설정된 프로젝트 전체에 대해 접수/조회할 수 있습니다.
 
 기본 모드의 `/api/agent/handoffs` 및 상세 GET은 새 접수 API의 호환 별칭입니다. 기존 클라이언트는 상태가 `queued`에서 `waiting_for_agent`로 달라지고 `auto_generate=true`가 거절되므로 수정이 필요합니다. `AX_ENABLE_LEGACY_CLAUDE=1`에서는 해당 별칭만 예전 메모리 기반 Claude 흐름으로 돌아갑니다. 신규 연동은 항상 `/api/agent/requests`를 사용하세요.
 
-향후 adapter는 상세 조회의 `task.payload`를 입력으로 받을 수 있습니다. **현재 조회 API는 큐 claim/lease가 아니므로 실행기를 붙이기 전에 중복 실행 방지, 인수 확인, 결과 상태와 취소 정책을 구현해야 합니다.** 데이터 조회에 성공했다는 이유로 현 단계에서 외부 실행기를 자동 호출하지 않습니다.
+향후 adapter는 상세 조회의 `task.payload`를 입력으로 받을 수 있습니다. **현재 조회 API는 큐 claim/lease가 아니므로 실행기를 붙이기 전에 중복 실행 방지, 인수 확인, 결과 상태와 취소 정책을 구현해야 합니다.** 데이터 조회만으로 외부 실행기를 자동 호출하지 않습니다. 아래 CLI dispatch는 직접 프롬프트 전달을 위한 별도 기능입니다.
 
 ## 전달 payload
 
@@ -124,3 +124,38 @@ GUI GET에는 별도 사용자 로그인/권한 분리가 없습니다. 접속 �
 | 413 | 전체 본문을 48KB 이하로 축소 |
 | 429 | 요청 200개/64MB 보관 한도 확인; 서버 중지 후 백업/정리 |
 | 500 | 서버 로그 및 디스크 권한/용량 확인. 동일 키로 재시도 |
+
+
+## Claude Code CLI 바로 전달 (v2.1)
+
+접수 응답의 `task.id`를 사용합니다. GUI는 **바로 전달** 버튼을 누르면 접수와 dispatch를 순서대로 수행합니다. 에이전트 API에서는 두 단계를 명시적으로 호출하세요.
+
+| API | 동작 |
+| --- | --- |
+| `POST /api/requests/dispatch` | GUI의 X-AX-Token 인증, CLI 호출 시작 |
+| `POST /api/agent/requests/dispatch` | X-AX-Agent-Token 인증, CLI 호출 시작 |
+| `GET /api/requests/{id}` | `cli_prompt` 미리보기, `cli_runs` 실행 이력·실제 프롬프트·응답·오류 |
+| `GET /api/agent/requests/{id}` | 동일 요청의 `status`, `cli_runs` 조회 (변경된 환경에는 기존 409 적용) |
+
+```json
+{"id":"접수된-task.id","idempotency_key":"ax-run-014-claude-attempt-1"}
+```
+
+응답은 HTTP 202와 task입니다. CLI 작업은 비동기이며 상세 GET으로 조회합니다. 동일 요청에서 같은 idempotency_key로 재시도하면 기존 실행을 반환하고 재실행하지 않습니다. 실패/중단 후 의도적으로 다시 보내려면 새 키를 사용하세요. 다른 요청 ID의 동일 키는 독립적입니다.
+
+| 상태 | 의미 |
+| --- | --- |
+| `waiting_for_agent` | 접수만 함, 아직 CLI 전송 없음 |
+| `cli_queued` | 실행 기록 저장 완료, CLI 시작 대기 |
+| `cli_running` | CLI 호출/응답 수신 중 |
+| `cli_complete` | 정상 종료와 비어 있지 않은 최종 텍스트 응답 확인 |
+| `cli_failed` | 실행·인증·응답 형식·타임아웃 또는 저장 실패 |
+| `cli_interrupted` | 서버 재시작으로 이전 실행의 완료 여부 불명; 자동 재전송 안 함 |
+
+CLI 미설치는 503이며 실행 기록을 만들지 않습니다. 설정 revision 또는 수정 허용 파일 목록 변경은 409로 거절합니다. 프로젝트당 동시 1건, 서버 전체 3건, 요청별 5회로 제한합니다. 프롬프트 2MB, 최종 응답 128KB, 전체 저장 파일 64MB 한도를 적용합니다.
+
+`cli_runs`에는 실행 ID, idempotency key, 상태, 시각, 실제 stdin `prompt`, `response`, `error`, 공개 이벤트가 포함됩니다. 접수 payload의 execution 값은 **접수 당시** 스냅샷입니다. 현재 CLI 상태는 상위 task.status와 cli_runs로 판단하세요. 코드 변경 상태를 CLI 응답 완료로 해석하지 마세요.
+
+CLI에 보내는 내용은 요청/본문·환경·파일 경로입니다. 소스 내용을 자동으로 읽거나 전체 저장소를 전송하지 않습니다. stdin을 직접 사용하고 shell=False, 임시 cwd, 빈 내장 도구 목록과 MCP 도구 차단을 적용합니다. JSON 변경안 스키마를 강제하지 않으며 code-dev agent 프롬프트 대신 전달 전용 시스템 지시를 사용합니다. 원시 stderr·내부 추론은 UI에 표시하지 않습니다.
+
+같은 서버 사용자 환경에서 `claude auth status`가 정상인지 확인하세요. 실제 인증/모델 호출은 해당 머신에 설치된 CLI와 조직 설정을 따릅니다.
