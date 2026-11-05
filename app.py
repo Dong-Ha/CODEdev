@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""AX Code-Dev GUI: Claude Code CLI proposals with explicit human approval.
+"""AX Code-Dev Request Studio: environment setup and durable agent requests.
 
 Requires Python 3.9+. Uses only the standard library for the web server.
-The optional Claude Code CLI may contact the user-configured Anthropic/provider service.
+The opt-in legacy Claude prototype may contact the configured provider service.
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ MAX_PATCH_REPLACEMENT_BYTES = 128 * 1024
 MAX_REQUEST_BYTES = 48 * 1024
 MAX_HANDOFFS = 80
 AGENT_TOKEN = os.environ.get("AX_AGENT_TOKEN", "")
+ENABLE_LEGACY_CLAUDE = os.environ.get("AX_ENABLE_LEGACY_CLAUDE", "") == "1"
 MAX_FILES = 10000  # Explicit scan-budget warning if exceeded; never silently filter.
 MAX_SCAN_FILES = 120000
 MAX_SCAN_DIRS = 40000
@@ -82,7 +83,8 @@ SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "build", "out", "dist",
 REFERENCE_SKIP_DIRS = SKIP_DIRS | {'secrets', 'credentials', 'private_keys', '.ssh'}
 PROFILE_FIELDS = {"project_name", "project_type", "build_dir", "architecture",
                   "cross_compile", "build_command", "build_env", "editable_paths",
-                  "blocked_paths", "change_notes", "code_guidelines"}
+                  "blocked_paths", "change_notes", "code_guidelines",
+                  "development_environment", "target_environment", "toolchain"}
 PROJECT_TYPES = {"linux-kernel", "generic"}
 
 
@@ -92,6 +94,9 @@ def default_profile(root: Path) -> dict:
     return {
         "project_name": root.name,
         "project_type": "linux-kernel" if kernel else "generic",
+        "development_environment": "",
+        "target_environment": "",
+        "toolchain": "",
         "build_dir": ".",
         "architecture": "arm64" if kernel else "",
         "cross_compile": "aarch64-linux-gnu-" if kernel else "",
@@ -865,7 +870,7 @@ def choose_targets(root: Path, prompt: str, profile: dict, context: dict,
     scan = scan_workspace(root, profile)
     candidates = scan["files"]
     if scan["stats"]["truncated"]:
-        raise ApiError("수정 허용 경로 탐색 한도를 초과했습니다. 개발 환경에서 허용 경로를 좁혀 주세요: "
+        raise ApiError("수정 허용 경로 탐색이 제한되었습니다. 개발 환경에서 허용 경로를 좁혀 주세요: "
                        + scan["stats"]["limit_reason"], 422)
     if not candidates:
         raise ApiError("개발 환경의 수정 허용 경로에서 편집 가능한 파일을 찾지 못했습니다. 경로를 확인하세요.", 409)
@@ -1533,6 +1538,8 @@ def run_job(ident: str, kind: str, body: dict) -> None:
             print(f"[{timestamp()}] job {ident} failed: {type(exc).__name__}")
 
 
+from request_intake import RequestIntake
+INTAKE = RequestIntake(globals())
 from http_api import build_handler
 Handler = build_handler(globals())
 
@@ -1557,19 +1564,24 @@ def main():
     HOST, PORT = args.host, args.port
     ALLOWED_HOSTS = set(args.allow_host)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print("AX Code-Dev GUI MVP 1.1.0")
+    print("AX Code-Dev Request Studio 2.0.0")
     print(f"Listening: {HOST}:{PORT}")
     print(f"Local: http://127.0.0.1:{PORT}")
     for host in sorted(ALLOWED_HOSTS | ({HOST} if HOST != "0.0.0.0" else set())):
         print(f"Allowed URL: http://{host}:{PORT}")
     if HOST not in {"127.0.0.1", "localhost"}:
-        print("Network access enabled: reachable clients can read sources and approve code changes. Use a trusted network.")
+        print("Network access enabled: reachable clients can view settings and submit requests. Use a trusted network.")
+        if ENABLE_LEGACY_CLAUDE:
+            print("Legacy mode also permits source review and approval of code changes.")
         print("WSL2 NAT: Windows IP access also requires Windows port forwarding; see README.md.")
     print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")
-    print(f"Claude Code CLI: {'available' if claude_status()['installed'] else 'not found'}")
+    print("Code-dev agent: not implemented; requests are saved locally for future handoff")
+    if ENABLE_LEGACY_CLAUDE:
+        print("Legacy Claude prototype explicitly enabled at /legacy")
     print(f"Agent handoff intake: {'enabled' if AGENT_TOKEN else 'disabled (set AX_AGENT_TOKEN)'}")
-    print("Note: Claude Code may transmit selected source/configuration to Anthropic or your configured provider.")
+    if ENABLE_LEGACY_CLAUDE:
+        print("Note: legacy Claude Code may transmit selected source/configuration to your configured provider.")
     print("No GUI telemetry · No automatic source writes · Press Ctrl+C to stop")
     try:
         server.serve_forever(poll_interval=0.25)

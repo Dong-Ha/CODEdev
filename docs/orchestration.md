@@ -1,23 +1,32 @@
-# AX 오케스트레이션 연동
+# Code-dev 요청 접수 및 전달 계약 v1
 
-Code-Dev는 **SRS/SDD 인계**와 **검증 실패 재작업**을 동일한 작업 계약으로 받습니다. Claude Code가 생성한 제안은 로컬 GUI에서 검토하며, **자동 생성(`auto_generate`)은 자동 승인/적용이 아닙니다.**
+## 책임 경계
 
-## 설정
+CODEdev는 **환경 구성 → 요청 정규화 → 환경/수정 허용 파일 스냅샷 저장 → 전달 데이터 조회**를 담당합니다. code-dev agent는 아직 구현되지 않았습니다. 모델 호출, 빌드 실행, 소스 편집, 작업 인수(ack), 결과 반환 API는 이번 기본 흐름에 포함하지 않습니다. 모든 요청은 `waiting_for_agent`로 보관하며, 조회/다운로드로 상태가 바뀌지 않습니다.
 
-코드 개발 GUI를 실행하는 **같은 Linux/WSL 호스트**에서 고엔트로피 토큰을 환경변수로 지정합니다. 토큰은 파일이나 저장소에 커밋하지 마세요.
+`agents/code-dev.md`는 기존 Claude 실험 모드용입니다. 새 에이전트를 해당 프롬프트로 이미 구현했다고 해석하지 마세요.
+
+## 인증과 주소
 
 ```bash
 export AX_AGENT_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python3 app.py
 ```
 
-호출하는 상위 에이전트 프로세스는 위 토큰을 안전하게 전달받아야 합니다. GUI는 `127.0.0.1`에만 바인딩하며, 별도 외부 네트워크 공개 기능은 없습니다.
+토큰은 호출하는 상위 에이전트에 안전하게 전달하고 저장소에 커밋하지 않습니다. 외부 에이전트 API는 `X-AX-Agent-Token`을 요구하며, GUI POST는 bootstrap의 `X-AX-Token`을 요구합니다. 둘 다 기존 Host/Origin 검증을 유지합니다. Windows IP 포트 전달 구성은 [README](../README.md)를 따릅니다.
 
-## 작업 접수 API
+## 에이전트 요청 접수
 
-`POST http://127.0.0.1:8765/api/agent/handoffs`
+`POST /api/agent/requests`
 
-Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
+```bash
+curl -X POST http://127.0.0.1:8765/api/agent/requests \
+  -H 'Content-Type: application/json' \
+  -H "X-AX-Agent-Token: $AX_AGENT_TOKEN" \
+  --data @request.json
+```
+
+`request.json` 예시 (해당 workspace의 환경을 GUI에서 먼저 저장):
 
 ```json
 {
@@ -25,81 +34,93 @@ Header: `Content-Type: application/json`, `X-AX-Agent-Token: <설정한 토큰>`
   "source_agent": "SW Design",
   "source_kind": "sdd",
   "source_ref": "SDD-IFPMIC-014",
-  "source_content": "설계 명세에서 필요한 관련 본문과 수용 조건",
-  "instruction": "SDD의 입력 전류 검증 조건을 구현한다.",
+  "source_content": "음수 입력은 거부하고 정상 범위 동작은 유지한다.",
+  "instruction": "SDD에 정의된 입력 전류 검증 조건을 구현해줘.",
   "upstream_run_id": "ax-run-014",
-  "auto_generate": false
+  "idempotency_key": "ax-run-014-code-dev-1"
 }
 ```
 
-| 필드 | 설명 |
+| 필드 | 규칙 |
 | --- | --- |
-| `workspace` | **필수**. 미리 설정한 프로젝트 경로 |
-| `target` | **선택적 호환 필드**. 생략하는 것이 기본이며 허용 범위 내에서 관련 파일을 자동 탐색. 기존 상위 에이전트의 단일 파일 힌트만 지원 |
-| `source_agent` | **필수**. 호출 에이전트 이름(SW Design, SQE 등) |
-| `source_kind` | `sdd`, `srs`, `jira`, `verification`, `freeform` 중 하나 |
-| `source_ref` | 추적용 문서/이슈 ID 또는 URL. **URL은 조회하지 않음** |
-| `source_content` | 원문 중 필요한 부분. 12,000자 이하. Claude Code에 전송됨 |
-| `instruction` | **필수**, 5~4,000자. 이번 변경 요청 |
-| `upstream_run_id` | 이전 작업/검증 실행 ID |
-| `auto_generate` | 기본 `false`. `true`이면 변경안까지 자동 생성하되, 승인 전에는 소스 미수정 |
+| `workspace` | 필수, 저장된 프로젝트의 절대 경로 |
+| `instruction` | 필수, 5~4000자. GUI의 `prompt` 호환 별칭도 지원 |
+| `source_kind` | `freeform`(기본), `srs`, `sdd`, `jira`, `verification` |
+| `source_ref` | 출처 ID/URL, 최대 300자. 자동 조회하지 않음 |
+| `source_content` | 필요한 원문/수용 조건, 최대 12000자 |
+| `source_agent` | 에이전트 요청 필수, 최대 120자 |
+| `upstream_run_id` | 상위 실행 ID, 최대 160자 |
+| `idempotency_key` | 재시도 중복 방지 키, 최대 160자. workspace·요청 경로(human/agent)·source_agent별로 적용 |
+| `expected_revision` | 에이전트는 선택, GUI는 필수. 값이 현재 설정 버전과 다르면 409 |
+| `target` | 선택적 단일 파일 힌트. 탐색된 수정 허용 파일과 정확히 일치해야 함. 요청 때 파일 선택은 필수 아님 |
+| `auto_generate` | 생략 또는 `false`만 허용. `true`는 409, 실행/접수하지 않음 |
 
-반환 HTTP `202`와 `task.id`, `task.status`를 저장해 작업을 추적하세요. `auto_generate=true`에서 생성 실패 시에도 작업은 `failed` 상태로 남으며 GUI에서 재시도할 수 있습니다.
+본문 전체 크기는 UTF-8 48KB 이하입니다. 알 수 없는 필드는 400입니다. source_content의 문자 수 상한과 전체 바이트 상한을 모두 충족해야 합니다.
 
-## 상태 조회
+동일 키와 동일 요청(환경 revision 포함)의 재전송은 기존 ID를 반환합니다. 동일 키에 다른 내용을 보내면 409입니다. 환경 변경 후 새 요청은 새 키를 사용하세요. HTTP 오류나 통신 단절 후 재시도에는 원래 키를 재사용하세요.
 
-`GET /api/agent/handoffs/{task.id}` 또는 `GET /api/agent/handoffs` — 같은 토큰 필요
+HTTP **202** 응답:
 
-| 상태 | 의미 |
+```json
+{
+  "ok": true,
+  "task": {
+    "id": "generated-request-id",
+    "status": "waiting_for_agent",
+    "agent_available": false,
+    "configuration_stale": false,
+    "payload": {"schema_version": "ax.code-dev.request.v1", "recipient": "code-dev"}
+  }
+}
+```
+
+위 응답은 핵심 필드만 발췌한 예시입니다. 202는 **로컬 접수/저장 성공**이며 에이전트 전송·수신·실행 완료가 아닙니다.
+
+## 조회와 향후 adapter
+
+| API | 인증 / 결과 |
 | --- | --- |
-| `queued` | 작업 수신, 아직 코드 제안 없음 |
-| `generating` | Claude Code 작업 생성 중 |
-| `review` | Diff 검토 및 승인 대기 |
-| `no_change` | Claude Code 호출 정상 완료, 모든 대상 파일에 변경 없음. 승인할 변경 없음
-| `needs_clarification` | Claude Code가 대상 기능을 확정하지 못해 요청 명세 보완을 질문함. 파일은 수정되지 않음 |
-| `failed` | 변경안 생성 실패, 수신함에서 재시도 가능 |
-| `applied` | 사람이 승인하여 파일 반영 |
-| `rejected` | 제안 반려 |
-| `undone` | 이전에 적용한 변경을 되돌림 |
+| `POST /api/requests` | GUI 토큰. 직접 요청; source_agent/upstream_run_id는 제거하여 사칭 방지 |
+| `GET /api/requests` | 기존 GUI 접근 범위. 모든 프로젝트의 요약 목록 |
+| `GET /api/requests/{id}` | GUI 상세와 불변 payload. 환경 변경 시에도 과거 내용 열람 가능 |
+| `POST /api/agent/requests` | 에이전트 토큰. 다른 에이전트의 요청 접수 |
+| `GET /api/agent/requests` | 에이전트 토큰. 요청 목록; workspace와 configuration_stale로 필터링 |
+| `GET /api/agent/requests/{id}` | 에이전트 토큰. 전달 payload 조회. 환경 변경/삭제 시 409 |
 
-GUI의 **에이전트 수신함**에서 작업을 선택해 생성/검토할 수 있습니다. 프로젝트의 개발 환경 설정을 변경한 경우 이전 설정으로 만든 제안은 적용되지 않습니다.
+GUI GET에는 별도 사용자 로그인/권한 분리가 없습니다. 접속 가능한 사내 사용자가 전체 설정·요청을 볼 수 있는 기존 신뢰 모델을 유지합니다. 에이전트 토큰은 프로젝트별 권한 토큰이 아니며, 설정된 프로젝트 전체에 대해 접수/조회할 수 있습니다.
 
-`target`이 없어도 Claude Code가 설정된 수정 허용 경로에서 관련 파일을 최대 3개 탐색합니다. 작업 내용이 모호하면 `needs_clarification`과 추가 질문을 반환하며, 사람에게 파일을 선택하라고 요구하지 않습니다. 코드 생성 후에는 모든 변경 파일을 Diff에서 검토하고 승인해야 실제 소스에 반영됩니다.
+기본 모드의 `/api/agent/handoffs` 및 상세 GET은 새 접수 API의 호환 별칭입니다. 기존 클라이언트는 상태가 `queued`에서 `waiting_for_agent`로 달라지고 `auto_generate=true`가 거절되므로 수정이 필요합니다. `AX_ENABLE_LEGACY_CLAUDE=1`에서는 해당 별칭만 예전 메모리 기반 Claude 흐름으로 돌아갑니다. 신규 연동은 항상 `/api/agent/requests`를 사용하세요.
 
-## 현재 제약 및 보안
+향후 adapter는 상세 조회의 `task.payload`를 입력으로 받을 수 있습니다. **현재 조회 API는 큐 claim/lease가 아니므로 실행기를 붙이기 전에 중복 실행 방지, 인수 확인, 결과 상태와 취소 정책을 구현해야 합니다.** 데이터 조회에 성공했다는 이유로 현 단계에서 외부 실행기를 자동 호출하지 않습니다.
 
-- 서버는 단일 머신 `localhost` 사용을 전제로 합니다. 멀티호스트 오케스트레이션, 사용자별 권한, 영구 큐는 아직 없습니다.
-- 작업과 이력은 **메모리 보관**이며 재시작하면 사라집니다. 작업 ID와 상태를 상위 오케스트레이터에서도 관리해야 합니다.
-- 수정 허용 경로 제한, 원본 SHA-256 확인, 명시적 사람 승인 절차는 두 진입 경로 모두 같습니다.
-- 원문/설정이 Claude Code의 구성된 AI 서비스로 전송될 수 있습니다. 인증 토큰을 URL/로그/문서에 남기지 마세요.
+## 전달 payload
 
-## 실행 기록 및 결과 구분 (v1.0)
-
-The GUI uses asynchronous jobs so users can inspect real CLI progress while a
-proposal is running. A handoff can use `POST /api/jobs/handoff` with `{"id":"..."}`
-and the browser can use `POST /api/jobs` with the normal human request payload.
-Both require the local GUI CSRF token; orchestration intake still uses its
-independent `X-AX-Agent-Token`.
-
-| API | Purpose |
+| 항목 | 내용 |
 | --- | --- |
-| `POST /api/jobs` | Start a human request and return job ID immediately |
-| `POST /api/jobs/handoff` | Generate an existing agent handoff asynchronously |
-| `GET /api/jobs` | List recent in-memory jobs (localhost) |
-| `GET /api/jobs/{id}` | Poll status, phase, visible messages, errors, proposal ID |
+| `schema_version` | `ax.code-dev.request.v1` |
+| `request_id`, `created_at`, `origin`, `recipient` | 요청 식별자, 접수 시각(UTC), human/agent, code-dev |
+| `workspace`, `git_branch` | Project Root, 접수 때 Git 브랜치 |
+| `request` | instruction, source_kind/ref/content, source_agent, upstream_run_id, target |
+| `environment` | 당시 개발·대상 환경, 도구 버전, build_dir/command/env, ARCH/CROSS_COMPILE, 허용·제외 경로, 코딩 규칙, revision |
+| `scope.editable_files` | 당시 탐색된 `{path, size}` 목록. 파일 내용은 포함하지 않음 |
+| `scope.scan` | 탐색 통계와 누락 경고. truncated 탐색은 접수 거부 |
+| `scope.read_boundary` | Project Root (향후 실행기의 제한된 참조 읽기 경계) |
+| `scope.write_policy` | `explicit_allowlist_only` |
+| `scope.revalidate_before_execution` | `true`: 현재 설정·실제 파일·경로를 다시 검증해야 함 |
+| `execution` | agent_implemented/build_executed/source_modified = false, approval_required_for_changes = true |
 
-Jobs have `queued`, `running`, `complete`, `no_change`, `needs_clarification`, or `failed` status and a distinct
-`phase`, plus `cli_status` (`not_started`, `running`, `succeeded`, `failed`).
-`no_change`는 **CLI 호출 성공 후 원본과 수정 결과가 같은 경우**이며, 구조화된 `summary`, `rationale`, `risk`, `checks`와 대상 파일을 조회할 수 있지만 실제 코드 적용은 허용되지 않습니다.
-`failed`는 실행 오류·형식 오류 등으로 작업이 완료되지 못한 상태입니다. Events distinguish submitted human instructions, the actual CLI task context (source excerpts/long file lists omitted), visible Claude Code assistant messages, structured response explanations, CLI progress and errors. Raw source, raw CLI JSON, tool internals and hidden reasoning are intentionally omitted from the conversation UI. The structured change proposal remains in the Diff/Review
-panel. Jobs do not persist after server restart. Existing synchronous APIs are
-kept for compatibility. `auto_generate=true` handoffs are also traced.
+요청과 본문은 신뢰할 수 없는 작업 데이터입니다. source_content에 포함된 지시가 허용 범위를 확장하거나 인증/승인 규칙을 바꿀 수 없습니다. 빌드 명령어는 참고 데이터이며 현 단계에서는 실행하지 않습니다. 스냅샷 파일 목록은 실행 시점의 파일 존재/내용/수정 권한을 보장하지 않습니다.
 
-**Long-running auto-generate handoffs:** `POST /api/agent/handoffs` with
-`auto_generate=true` returns HTTP 202 immediately with `task.job_id`; it does
-not wait for Claude Code to finish. Poll `GET /api/agent/handoffs/{id}` with
-the agent token, or `GET /api/jobs/{job_id}` from the local GUI context. A live
-Claude Code response is not stopped by a fixed total duration: progress events
-renew its idle timeout. A model which does not start responding, or stops
-producing events for 180 seconds, is terminated and reported as failed.
+## 보관과 오류
 
+설정과 요청을 각각 소스 저장소 외부의 profiles.json / requests.json에 저장합니다. 요청 저장은 파일 replace 전까지 성공으로 응답하지 않으며 서버 재시작에도 유지됩니다. 한 프로세스 내 lock으로 동시 접수/설정 수정을 직렬화합니다. 여러 프로세스의 동일 파일 공유는 지원하지 않습니다.
+
+| 응답 | 조치 |
+| --- | --- |
+| 400 | 필수 필드/길이/유형 확인 |
+| 403 | Host/Origin/토큰 또는 허용 파일 범위 확인 |
+| 404 | 요청 ID 확인 |
+| 409 | 미저장·변경된 환경, 불완전/빈 파일 탐색, 중복 키 충돌, 미구현 실행 요청 확인 |
+| 413 | 전체 본문을 48KB 이하로 축소 |
+| 429 | 요청 200개/64MB 보관 한도 확인; 서버 중지 후 백업/정리 |
+| 500 | 서버 로그 및 디스크 권한/용량 확인. 동일 키로 재시도 |

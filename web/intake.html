@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7fb"><title>AX Studio — 개발 요청</title>
+  <link rel="stylesheet" href="/intake.css"><script src="/intake.js" defer></script>
+</head>
+<body>
+  <header><a class="brand" href="/">AX <span>Studio</span></a><span class="header-caption">CODE-DEV / REQUEST STUDIO</span><span class="badge">Agent 연결 준비 중</span></header>
+  <main>
+    <div class="intro"><p class="eyebrow">SW DEVELOPMENT</p><h1>개발의 조건을 정하고,<br>요청을 전달하세요.</h1><p>개발·빌드 환경과 수정 허용 파일을 요청에 담아 code-dev agent를 위한 작업을 준비합니다.</p></div>
+    <div class="notice"><strong>현재 단계: 요청 접수 및 전달 준비</strong><span>code-dev agent는 추후 구현됩니다. 요청은 이 서버에 저장되며 코드 생성·빌드·파일 수정은 실행되지 않습니다.</span></div>
+    <nav aria-label="작업 화면"><button id="navEnvironment" aria-current="page">01 <span>개발 환경</span></button><button id="navRequest">02 <span>요청 작성</span></button><button id="navQueue">03 <span>접수 내역</span><span id="queueCount" class="count">0</span></button></nav>
+    <div id="message" class="message" role="status" aria-live="polite" hidden></div>
+    <section id="environmentView" aria-labelledby="environmentHeading">
+      <div class="section-heading"><div><h2 id="environmentHeading">개발 환경</h2><p>프로젝트별 설정을 저장한 뒤 여러 요청에 재사용하세요.</p></div><span id="profileStatus" class="badge">설정 필요</span></div>
+      <div class="card"><label for="workspace">Project Root</label><div class="inline"><input id="workspace" placeholder="/home/user/repos/linux" spellcheck="false"><button id="connect" type="button">경로 연결</button><button id="sample" type="button" class="secondary">샘플 연결</button></div><p class="hint">서버가 실행되는 WSL/Linux 기준 절대 경로입니다. Windows 경로라면 /mnt/c/... 형식을 사용하세요.</p><p id="connectedPath" class="hint">연결된 프로젝트 없음</p></div>
+      <form id="environmentForm">
+        <fieldset id="environmentFields" disabled>
+          <div class="two-column"><section class="card"><h3>프로젝트 · 개발 환경</h3>
+            <label for="project_name">프로젝트명 *</label><input id="project_name" required maxlength="120">
+            <label for="project_type">프로젝트 유형</label><select id="project_type"><option value="linux-kernel">Linux Kernel / Driver</option><option value="generic">일반 소스 프로젝트</option></select>
+            <label for="development_environment">개발 환경 정보</label><textarea id="development_environment" rows="3" maxlength="1500" placeholder="예: Windows 11 + WSL Ubuntu 24.04, Python 3.12, Git 2.x"></textarea>
+            <label for="target_environment">대상 환경</label><textarea id="target_environment" rows="3" maxlength="1500" placeholder="예: Android 16, arm64, IFPMIC charger / fuel gauge, 커널 버전"></textarea>
+            <label for="toolchain">컴파일러 · 도구 버전</label><textarea id="toolchain" rows="2" maxlength="1500" placeholder="예: Clang 버전, 빌드 컨테이너 이미지, SDK"></textarea>
+          </section><section class="card"><h3>빌드 환경</h3><p class="hint">빌드 방법을 기록합니다. 명령은 실행하지 않습니다.</p>
+            <label for="build_dir">빌드 작업 폴더 *</label><input id="build_dir" required placeholder="."><p class="hint">Project Root 안의 기존 폴더를 상대 경로로 지정하세요.</p>
+            <div class="two-column"><div><label for="architecture">ARCH</label><input id="architecture" placeholder="arm64"></div><div><label for="cross_compile">CROSS_COMPILE</label><input id="cross_compile" placeholder="aarch64-linux-gnu-"></div></div>
+            <label for="build_command">빌드 명령어 *</label><textarea id="build_command" class="mono" required rows="4" maxlength="4000" placeholder="make O=out ARCH=arm64 ..."></textarea>
+            <label for="build_env">추가 환경변수</label><textarea id="build_env" class="mono" rows="3" maxlength="4000" placeholder="LLVM=1&#10;KCFLAGS=-Werror"></textarea><p class="hint">한 줄에 KEY=value. 비밀번호·토큰은 입력하지 마세요.</p>
+          </section></div>
+          <section class="card"><h3>수정 가능한 파일 지정</h3><p class="hint">개별 파일 경로나 폴더 패턴을 한 줄에 하나씩 입력하세요. 제외 경로가 우선 적용됩니다.</p>
+            <div class="two-column"><div><label for="editable_paths">수정 허용 파일 · 경로 *</label><textarea id="editable_paths" class="mono" required rows="5" maxlength="1500" placeholder="drivers/power/supply/s2mf301_charger.c&#10;include/linux/power/**"></textarea><p class="hint">Project Root 기준 상대 경로. *는 한 단계, **는 모든 하위 경로입니다.</p></div><div><label for="blocked_paths">수정 제외 파일 · 경로</label><textarea id="blocked_paths" class="mono" rows="5" maxlength="1500" placeholder="**/*.key&#10;**/secrets/**"></textarea><p class="hint">숨김 파일·심볼릭 링크·빌드 폴더는 탐색에서 제외됩니다.</p></div></div>
+            <label for="change_notes">개발 대상 · 범위 설명</label><textarea id="change_notes" rows="2" maxlength="4000" placeholder="관련 기능, 수정 가능한 함수, 영향 범위"></textarea>
+            <label for="code_guidelines">코딩 규칙 · 제약</label><textarea id="code_guidelines" rows="2" maxlength="4000" placeholder="기존 커널 스타일 유지, IRQ 및 동시성 검토, 관련 없는 로직 수정 금지"></textarea>
+            <details id="fileManifest"><summary>저장된 설정의 수정 가능 파일 <span id="fileCount" class="count">0</span></summary><p id="scanStatus" class="hint"></p><label for="fileSearch">파일명 · 경로 검색</label><input type="search" id="fileSearch" placeholder="charger.c 또는 drivers/power"><ul id="fileList" class="file-list"></ul><button id="moreFiles" type="button" class="secondary" hidden>더 보기</button></details>
+          </section>
+          <div class="actions"><p id="unsaved" class="hint">설정을 저장해 주세요.</p><button id="saveEnvironment" type="submit">환경 설정 저장</button><button id="goRequest" type="button" class="secondary">요청 작성으로</button></div>
+        </fieldset>
+      </form>
+    </section>
+    <section id="requestView" aria-labelledby="requestHeading" hidden>
+      <div class="section-heading"><div><h2 id="requestHeading">개발 요청 작성</h2><p>문제, 기대 동작과 완료 조건을 함께 전달하세요.</p></div></div>
+      <div class="two-column request-columns"><form id="requestForm" class="card">
+        <label for="sourceKind">요청 근거</label><select id="sourceKind"><option value="freeform">자유 요청</option><option value="sdd">SDD · 상세 설계</option><option value="jira">Jira 이슈</option><option value="srs">SRS · 요구사항 명세</option><option value="verification">검증 피드백</option></select>
+        <label for="sourceRef">문서 · 이슈 ID 또는 링크</label><input id="sourceRef" maxlength="300" placeholder="예: SDD-IFPMIC-014 / PMIC-123">
+        <label for="sourceContent">참고 본문 · 수용 조건</label><textarea id="sourceContent" rows="6" maxlength="12000" placeholder="SDD나 Jira의 필요한 본문을 붙여넣으세요."></textarea><p class="hint">링크는 추적용입니다. 문서·Jira를 자동 조회하지 않습니다.</p>
+        <label for="instruction">개발 요청 *</label><textarea id="instruction" required minlength="5" maxlength="4000" rows="7" placeholder="현재 문제, 재현 조건, 기대 동작, 유지해야 할 기존 동작을 설명하세요."></textarea>
+        <button id="example" type="button" class="text-button">IFPMIC 요청 예시</button>
+        <div class="actions"><button id="submitRequest" type="submit" disabled>요청 접수 · 전달 준비</button></div><p class="hint">현재 저장된 환경과 파일 목록을 함께 보관합니다. 실제 에이전트로 전송되지는 않습니다.</p>
+      </form><aside><section class="card"><h3>함께 전달할 개발 조건</h3><div id="activeProfile" class="summary"></div><button id="editEnvironment" type="button" class="secondary">환경 설정 수정</button></section><section class="card subtle"><h3>다른 에이전트의 요청</h3><p id="agentIntakeStatus">연동 상태 확인 중</p><p class="hint">인증된 요청도 같은 접수 내역에 저장됩니다. 요청 출처와 상위 실행 ID를 함께 보관합니다.</p></section></aside></div>
+    </section>
+    <section id="queueView" aria-labelledby="queueHeading" hidden>
+      <div class="section-heading"><div><h2 id="queueHeading">접수 내역</h2><p>현재 프로젝트의 요청 · 서버 재시작 후에도 보관됩니다.</p></div><button id="refreshQueue" class="secondary">새로고침</button></div>
+      <div class="queue-layout"><section class="card"><label for="originFilter">요청 출처</label><select id="originFilter"><option value="all">전체 요청</option><option value="human">직접 요청</option><option value="agent">다른 에이전트</option></select><div id="requestList" class="request-list"></div></section><section class="card" id="requestDetail" aria-live="polite"><p class="empty">요청을 선택하면 전달 내용을 확인할 수 있습니다.</p></section></div>
+    </section>
+    <footer>AX Studio · 환경 설정 → 요청 접수 → code-dev agent 연결 대기 <a id="legacyLink" href="/legacy" hidden>기존 Claude 실험 화면</a></footer>
+  </main>
+</body>
+</html>

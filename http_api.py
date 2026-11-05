@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 def build_handler(context: dict):
     class Handler (BaseHTTPRequestHandler ):
-        server_version ="AXCodeDevMVP/1.4"
+        server_version ="AXCodeDevRequestStudio/2.0"
         def _headers (self ,status :int ,mime :str ="application/json; charset=utf-8",length :int =0 ):
             self .send_response (status )
             self .send_header ("Content-Type",mime )
@@ -57,8 +57,23 @@ def build_handler(context: dict):
                 return self ._json (200 ,{"ok":True ,"token":context['CSRF'] ,"sample_path":str (context['SAMPLE'] .resolve ()),
                 "last_workspace":store .get ("last_workspace",""),
                 "config_file":str (context['CONFIG_FILE'] ),
-                "version":"1.4.0","agent_intake_enabled":bool (context['AGENT_TOKEN'] ),
+                "version":"2.0.0","agent_intake_enabled":bool (context['AGENT_TOKEN'] ),
+                "code_dev_agent":{"implemented":False,"status":"not_connected"},
+                "legacy_claude_enabled":context['ENABLE_LEGACY_CLAUDE'],
                 "limitations":{"max_full_file_output_kb":64,"max_edit_source_mb":8,"large_file_patch":True }})
+            intake_route = route.replace("/api/agent/requests", "/api/requests", 1)
+            if not context['ENABLE_LEGACY_CLAUDE']:
+                intake_route = intake_route.replace("/api/agent/handoffs", "/api/requests", 1)
+            if intake_route == "/api/requests" or intake_route.startswith("/api/requests/"):
+                if route.startswith("/api/agent/") and not self._agent_authorized():
+                    return self._json(403, {"ok": False, "error": "에이전트 연동 인증이 필요합니다."})
+                try:
+                    if intake_route == "/api/requests":
+                        return self._json(200, {"ok": True, "tasks": context['INTAKE'].list()})
+                    task = context['INTAKE'].get(intake_route.rsplit("/", 1)[1], for_agent=route.startswith("/api/agent/"))
+                    return self._json(200, {"ok": True, "task": task})
+                except Exception as exc:
+                    return self._error(exc)
             if route =="/api/claude/status":
                 return self ._json (200 ,{"ok":True ,**context['claude_status'] ()})
             if route =="/api/jobs":
@@ -89,8 +104,11 @@ def build_handler(context: dict):
                     return self ._json (200 ,{"ok":True ,"task":context['public_handoff'] (item )})
             if route .startswith ("/api/"):
                 return self ._json (404 ,{"ok":False ,"error":"찾을 수 없는 API입니다."})
-            asset ={"/":"index.html","/index.html":"index.html","/style.css":"style.css",
-            "/app.js":"app.js","/run_console.css":"run_console.css"}.get (route )
+            asset ={"/":"intake.html","/index.html":"intake.html","/style.css":"style.css",
+            "/app.js":"app.js","/run_console.css":"run_console.css",
+            "/intake.js":"intake.js", "/intake.css":"intake.css"}.get (route )
+            if route == "/legacy" and context['ENABLE_LEGACY_CLAUDE']:
+                asset = "index.html"
             if not asset :
                 return self ._headers (404 ,"text/plain",0 )
             path =context['WEB'] /asset 
@@ -106,7 +124,7 @@ def build_handler(context: dict):
             if not self ._origin_ok ():
                 return self ._json (403 ,{"ok":False ,"error":"허용되지 않은 Origin/Host입니다."})
             route =urlparse (self .path ).path 
-            agent_api =route =="/api/agent/handoffs"
+            agent_api =route in {"/api/agent/handoffs", "/api/agent/requests"}
             if agent_api :
                 if not self ._agent_authorized ():
                     return self ._json (403 ,{"ok":False ,"error":"에이전트 연동 인증이 필요합니다."})
@@ -121,8 +139,14 @@ def build_handler(context: dict):
                 body =json .loads (self .rfile .read (length ))
                 if not isinstance (body ,dict ):
                     raise context['ApiError'] ("JSON 객체를 전달하세요.")
+                if route in {"/api/requests", "/api/agent/requests"} or (agent_api and not context['ENABLE_LEGACY_CLAUDE']):
+                    return self._json(202, {"ok": True, "task": context['INTAKE'].create(body, agent=agent_api)})
                 if agent_api :
                     return self ._json (202 ,{"ok":True ,"task":context['create_handoff'] (body )})
+                if not context['ENABLE_LEGACY_CLAUDE'] and route in {
+                        "/api/jobs", "/api/jobs/handoff", "/api/propose", "/api/handoff/generate",
+                        "/api/apply", "/api/reject", "/api/undo"}:
+                    raise context['ApiError']("code-dev agent는 아직 구현되지 않았습니다. 요청 접수 화면을 사용하세요.", 409)
                 if route =="/api/workspace":
                     root =context['resolve_workspace'] (body .get ("path"))
                     profile =context['profile_for'] (root )
