@@ -7,6 +7,7 @@ The optional Claude Code CLI may contact the user-configured Anthropic/provider 
 
 from __future__ import annotations
 
+import argparse
 import difflib
 import hashlib
 import hmac
@@ -28,7 +29,8 @@ from urllib.parse import urlparse
 BASE = Path(__file__).resolve().parent
 WEB = BASE / "web"
 SAMPLE = BASE / "sample_workspace"
-HOST = "127.0.0.1"
+HOST = os.environ.get("AX_HOST", "127.0.0.1")
+ALLOWED_HOSTS = {host.strip() for host in os.environ.get("AX_ALLOWED_HOSTS", "").split(",") if host.strip()}
 PORT = int(os.environ.get("AX_PORT", "8765"))
 # Source inventory is governed by explicit path patterns, never file size.
 # Edit generation uses full-file output for small files and exact patch spans
@@ -1534,10 +1536,35 @@ def run_job(ident: str, kind: str, body: dict) -> None:
 from http_api import build_handler
 Handler = build_handler(globals())
 
+def parse_server_args(argv=None):
+    parser = argparse.ArgumentParser(description="AX Code-Dev HTTP server")
+    parser.add_argument("--host", default=HOST, help="Bind address (AX_HOST; default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=PORT, help="HTTP port (AX_PORT; default: 8765)")
+    parser.add_argument("--allow-host", action="append", default=sorted(ALLOWED_HOSTS),
+                        help="Additional browser hostname or Windows IPv4 address, without port; repeatable (AX_ALLOWED_HOSTS)")
+    args = parser.parse_args(argv)
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535")
+    for host in args.allow_host:
+        if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?", host):
+            parser.error("--allow-host requires a hostname or IPv4 address without scheme, port or wildcard")
+    return args
+
+
 def main():
+    global HOST, PORT, ALLOWED_HOSTS
+    args = parse_server_args()
+    HOST, PORT = args.host, args.port
+    ALLOWED_HOSTS = set(args.allow_host)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print("AX Code-Dev GUI MVP 1.1.0")
-    print(f"Open: http://{HOST}:{PORT}")
+    print(f"Listening: {HOST}:{PORT}")
+    print(f"Local: http://127.0.0.1:{PORT}")
+    for host in sorted(ALLOWED_HOSTS | ({HOST} if HOST != "0.0.0.0" else set())):
+        print(f"Allowed URL: http://{host}:{PORT}")
+    if HOST not in {"127.0.0.1", "localhost"}:
+        print("Network access enabled: reachable clients can read sources and approve code changes. Use a trusted network.")
+        print("WSL2 NAT: Windows IP access also requires Windows port forwarding; see README.md.")
     print(f"Sample workspace: {SAMPLE.resolve()}")
     print(f"Profiles (outside repository): {CONFIG_FILE}")
     print(f"Claude Code CLI: {'available' if claude_status()['installed'] else 'not found'}")

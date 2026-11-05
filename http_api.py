@@ -31,13 +31,18 @@ def build_handler(context: dict):
                 self .log_error ("Internal error: %r",exc )
 
         def _origin_ok (self )->bool :
-            hostname =self .headers .get ("Host","")
-            if hostname not in {f"127.0.0.1:{context['PORT'] }",f"localhost:{context['PORT'] }"}:
-                return False 
-            origin =self .headers .get ("Origin")
-            if origin and origin not in {f"http://127.0.0.1:{context['PORT'] }",f"http://localhost:{context['PORT'] }"}:
-                return False 
-            return True 
+            # Explicit authorities keep DNS rebinding protection in network mode.
+            port = self.server.server_address[1]
+            hosts = {"127.0.0.1", "localhost"} | set(context.get("ALLOWED_HOSTS", ()))
+            bind_host = context.get("HOST", "127.0.0.1")
+            if bind_host != "0.0.0.0":
+                hosts.add(bind_host)
+            authority = self.headers.get("Host", "")
+            if authority not in {f"{host}:{port}" for host in hosts}:
+                return False
+            origin = self.headers.get("Origin")
+            # A token alone must not allow requests from another website.
+            return origin is None or origin == f"http://{authority}"
 
         def _agent_authorized (self )->bool :
             return bool (context['AGENT_TOKEN'] )and hmac .compare_digest (
@@ -45,7 +50,7 @@ def build_handler(context: dict):
 
         def do_GET (self ):
             if not self ._origin_ok ():
-                return self ._json (403 ,{"ok":False ,"error":"로컬 호스트 접속만 허용됩니다."})
+                return self ._json (403 ,{"ok":False ,"error":"허용되지 않은 Origin/Host입니다."})
             route =urlparse (self .path ).path 
             if route =="/api/bootstrap":
                 store =context['read_store'] ()

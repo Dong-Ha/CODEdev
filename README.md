@@ -15,6 +15,48 @@ python3 app.py
 
 Windows 브라우저: **http://127.0.0.1:8765**
 
+## WSL에서 Windows IP로 접속
+
+기본 실행은 localhost 전용입니다. Windows의 LAN IPv4 주소가 `192.168.1.50`이라면 WSL에서 다음과 같이 실행합니다. 주소는 Windows `ipconfig`의 실제 IPv4 주소로 바꾸세요.
+
+```bash
+python3 app.py --host 0.0.0.0 --allow-host 192.168.1.50
+```
+
+접속 주소: **http://192.168.1.50:8765** (`0.0.0.0`은 서버 바인딩 주소이며 브라우저 접속 주소가 아닙니다). localhost 접속도 계속 지원합니다. 화면의 서버 상태에는 실제 접속 주소가 표시됩니다.
+
+- `--port 9000`: 포트 변경 (기본값: `AX_PORT` 또는 8765).
+- `--allow-host`: 접속에 사용할 IP/호스트 이름만 지정, 포트·URL 제외. 여러 주소는 옵션을 반복합니다.
+- 환경변수로도 지정 가능: `AX_HOST=0.0.0.0 AX_ALLOWED_HOSTS=192.168.1.50,dev-pc python3 app.py`.
+- 기본 localhost 외에는 지정한 바인딩 주소와 허용 호스트만 받습니다. 와일드카드 호스트 허용은 지원하지 않으며 Origin과 CSRF 검증도 유지합니다.
+
+**WSL2 기본 NAT 모드:** 앱 설정 외에 Windows 포트 전달이 필요합니다. **관리자 PowerShell**에서 실행하세요. `Ubuntu`는 `wsl -l -q`에 표시되는 실제 배포판 이름으로, Windows IP와 포트도 실행 설정에 맞게 바꿉니다.
+
+```powershell
+$Distro = "Ubuntu"
+$WindowsIp = "192.168.1.50"
+$Port = 8765
+$WslIp = ((wsl.exe -d $Distro hostname -I).Trim() -split '\s+')[0]
+netsh interface portproxy add v4tov4 listenaddress=$WindowsIp listenport=$Port connectaddress=$WslIp connectport=$Port
+New-NetFirewallRule -Name "CODEdev-$Port" -DisplayName "CODEdev $Port" -Direction Inbound -Action Allow -Protocol TCP -LocalAddress $WindowsIp -LocalPort $Port -RemoteAddress LocalSubnet -Profile Private
+```
+
+`hostname -I`에 여러 IP가 나오면 실제 WSL NAT 어댑터의 IPv4 주소를 `$WslIp`로 지정하세요. WSL 재시작으로 IP가 바뀌면 포트 전달 명령을 다시 실행합니다. 방화벽 규칙은 처음 한 번만 추가하며, 다른 기기에서는 Windows 네트워크가 Private인지 확인하세요. Windows IP가 바뀌면 앱의 `--allow-host`와 Windows 설정도 갱신합니다.
+
+설정 확인 및 해제 (관리자 PowerShell, 위 변수 사용):
+
+```powershell
+netsh interface portproxy show v4tov4
+Test-NetConnection $WindowsIp -Port $Port
+# 접속 허용을 끝낼 때만 실행
+netsh interface portproxy delete v4tov4 listenaddress=$WindowsIp listenport=$Port
+Remove-NetFirewallRule -Name "CODEdev-$Port"
+```
+
+**이미 mirrored 모드를 사용하는 경우:** NAT용 portproxy는 필요하지 않습니다. Windows/Hyper-V 방화벽에서 해당 포트를 허용해야 할 수 있습니다. Microsoft 공식 [WSL 네트워킹 안내](https://learn.microsoft.com/en-us/windows/wsl/networking)를 참고하세요.
+
+**네트워크 접근 권한:** GUI에는 별도 로그인 인증이 없습니다. 접속 가능한 사용자는 소스 열람·변경 승인 등 로컬 사용자와 같은 작업을 할 수 있으므로 신뢰하는 네트워크에서만 사용하세요. `--allow-host`는 접속 URL 검증이며 클라이언트 IP 접근제어가 아닙니다. 인터넷 공유기 포트 개방은 하지 마세요.
+
 ## 두 가지 사용 방법
 
 | 경로 | 작업 방식 |

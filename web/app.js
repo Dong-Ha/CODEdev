@@ -983,7 +983,7 @@ async function initialize() {
     const response = await request("/api/bootstrap");
     state.token = response.token;
     await refreshClaudeStatus();
-    $("serverSideStatus").textContent = "127.0.0.1 · 연결됨";
+    $("serverSideStatus").textContent = `${window.location.host} · 연결됨`;
     state.configFile = response.config_file;
     state.agentIntakeEnabled = Boolean(response.agent_intake_enabled);
     $("agentIntakeStatus").textContent = state.agentIntakeEnabled
