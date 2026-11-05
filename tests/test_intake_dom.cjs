@@ -42,7 +42,7 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   await until(() => !document.getElementById('environmentFields').disabled);
   fill(dom, 'development_environment', 'Windows 11 + WSL Ubuntu 24.04');
   fill(dom, 'target_environment', 'Android 16 / IFPMIC charger');
-  fill(dom, 'toolchain', 'Clang 18');
+  fill(dom, 'build_command', 'make original');
   fill(dom, 'editable_paths', 'drivers/power/supply/ax_ifpmic_charger.c');
   submit(dom, 'environmentForm');
   await until(() => !document.getElementById('goRequest').disabled);
@@ -57,7 +57,7 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   await until(() => document.getElementById('requestDetail').textContent.includes('PMIC-123'));
   await until(() => !document.getElementById('sample').disabled);
   assert.match(document.getElementById('requestDetail').textContent, /전송 대기/);
-  assert.match(document.getElementById('requestDetail').textContent, /Clang 18/);
+  assert.match(document.getElementById('requestDetail').textContent, /make original/);
   assert.equal(document.getElementById('requestDetail').querySelector('script'), null);
   assert.match(document.getElementById('requestDetail').textContent, /전달 JSON 다운로드/);
   const count = document.getElementById('queueCount').textContent;
@@ -73,7 +73,7 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   document.querySelector('.request-item').click();
   await until(() => document.getElementById('requestDetail').textContent.includes('PMIC-123'));
   assert.match(document.getElementById('requestDetail').textContent, /Windows 11/);
-  click(dom, 'navEnvironment'); fill(dom, 'toolchain', 'Clang 19'); click(dom, 'navRequest');
+  click(dom, 'navEnvironment'); fill(dom, 'build_command', 'make changed'); click(dom, 'navRequest');
   assert.equal(document.getElementById('requestView').hidden, true);
   submit(dom, 'environmentForm');
   await until(() => !document.getElementById('goRequest').disabled);
@@ -81,7 +81,7 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   await until(() => document.querySelector('.request-item'));
   document.querySelector('.request-item').click();
   await until(() => document.getElementById('requestDetail').textContent.includes('접수 후 환경 설정이 변경'));
-  assert.match(document.getElementById('requestDetail').textContent, /Clang 18/);
+  assert.match(document.getElementById('requestDetail').textContent, /make original/);
   assert.deepEqual(errors, []);
   if (process.env.AX_TEST_CLI === '1') {
     // Saved pre-change task is stale; make a new request using the current profile.

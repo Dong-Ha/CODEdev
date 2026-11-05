@@ -1,8 +1,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
-const fields = ["project_name", "project_type", "development_environment", "target_environment", "toolchain",
-  "build_dir", "architecture", "cross_compile", "build_command", "build_env", "editable_paths",
-  "blocked_paths", "change_notes", "code_guidelines"];
+const fields = ["project_name", "project_type", "development_environment", "target_environment",
+  "build_dir", "build_command", "build_env", "editable_paths",
+  "blocked_paths", "code_guidelines"];
 const kinds = {freeform:"자유 요청", sdd:"SDD", jira:"Jira", srs:"SRS", verification:"검증 피드백"};
 const cliLabels = {waiting_for_agent:"전송 대기", cli_queued:"Claude 전송 대기", cli_running:"Claude 응답 중", cli_complete:"Claude 응답 완료", cli_failed:"Claude 호출 실패", cli_interrupted:"실행 중단 · 확인 필요"};
 const state = {token:"", workspace:"", config:null, base:"", files:[], scan:null,
@@ -67,7 +67,7 @@ function pairs(container, entries) {
 function renderProfile() {
   const root=$("activeProfile"); root.replaceChildren(); const c=state.config || {};
   pairs(root, [["프로젝트", c.project_name], ["Project Root",state.workspace], ["개발 환경",c.development_environment],
-    ["대상 환경",c.target_environment], ["도구 버전",c.toolchain], ["빌드 명령",c.build_command],
+    ["대상 환경",c.target_environment], ["빌드 명령",c.build_command],
     ["수정 허용 경로",c.editable_paths], ["제외 경로",c.blocked_paths], ["허용 파일",`${state.files.length}개`]]);
   if (state.scan?.truncated || !state.files.length) {const p=document.createElement("p"); p.className="stale"; p.textContent="수정 가능한 파일을 확인하고 탐색 제한을 해결한 뒤 요청을 접수하세요."; root.append(p);}
 }
@@ -133,10 +133,10 @@ function renderDetail(task) {
   pairs(root, [["요청 ID", task.id], ["요청 근거",kinds[task.source_kind]], ["출처", task.origin === "agent" ? task.source_agent : "직접 요청"],
     ["상위 실행 ID",task.upstream_run_id], ["참조 ID / 링크",task.source_ref], ["개발 요청",task.instruction], ["참고 본문", task.source_content],
     ["프로젝트",env.project_name], ["Project Root",payload.workspace], ["설정 버전",env.revision],
-    ["개발 환경",env.development_environment], ["대상 환경",env.target_environment], ["도구 버전",env.toolchain],
-    ["빌드 작업 폴더",env.build_dir], ["ARCH / CROSS_COMPILE",[env.architecture,env.cross_compile].filter(Boolean).join(" / ")],
+    ["개발 환경",env.development_environment], ["대상 환경",env.target_environment],
+    ["빌드 작업 폴더",env.build_dir],
     ["빌드 명령",env.build_command], ["빌드 환경변수",env.build_env], ["수정 허용 경로",env.editable_paths], ["수정 제외 경로",env.blocked_paths],
-    ["개발 대상 설명",env.change_notes], ["코딩 규칙",env.code_guidelines]]);
+    ["코딩 규칙",env.code_guidelines]]);
   const files=document.createElement("details"), summary=document.createElement("summary"), list=document.createElement("ul");
   summary.textContent=`접수 당시 수정 가능 파일 ${payload.scope.editable_files.length}개`;
   list.className="file-list";

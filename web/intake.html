@@ -22,16 +22,13 @@
             <label for="project_type">프로젝트 유형</label><select id="project_type"><option value="linux-kernel">Linux Kernel / Driver</option><option value="generic">일반 소스 프로젝트</option></select>
             <label for="development_environment">개발 환경 정보</label><textarea id="development_environment" rows="3" maxlength="1500" placeholder="예: Windows 11 + WSL Ubuntu 24.04, Python 3.12, Git 2.x"></textarea>
             <label for="target_environment">대상 환경</label><textarea id="target_environment" rows="3" maxlength="1500" placeholder="예: Android 16, arm64, IFPMIC charger / fuel gauge, 커널 버전"></textarea>
-            <label for="toolchain">컴파일러 · 도구 버전</label><textarea id="toolchain" rows="2" maxlength="1500" placeholder="예: Clang 버전, 빌드 컨테이너 이미지, SDK"></textarea>
           </section><section class="card"><h3>빌드 환경</h3><p class="hint">빌드 방법을 기록합니다. 명령은 실행하지 않습니다.</p>
             <label for="build_dir">빌드 작업 폴더 *</label><input id="build_dir" required placeholder="."><p class="hint">Project Root 안의 기존 폴더를 상대 경로로 지정하세요.</p>
-            <div class="two-column"><div><label for="architecture">ARCH</label><input id="architecture" placeholder="arm64"></div><div><label for="cross_compile">CROSS_COMPILE</label><input id="cross_compile" placeholder="aarch64-linux-gnu-"></div></div>
             <label for="build_command">빌드 명령어 *</label><textarea id="build_command" class="mono" required rows="4" maxlength="4000" placeholder="make O=out ARCH=arm64 ..."></textarea>
             <label for="build_env">추가 환경변수</label><textarea id="build_env" class="mono" rows="3" maxlength="4000" placeholder="LLVM=1&#10;KCFLAGS=-Werror"></textarea><p class="hint">한 줄에 KEY=value. 비밀번호·토큰은 입력하지 마세요.</p>
           </section></div>
           <section class="card"><h3>수정 가능한 파일 지정</h3><p class="hint">개별 파일 경로나 폴더 패턴을 한 줄에 하나씩 입력하세요. 제외 경로가 우선 적용됩니다.</p>
             <div class="two-column"><div><label for="editable_paths">수정 허용 파일 · 경로 *</label><textarea id="editable_paths" class="mono" required rows="5" maxlength="1500" placeholder="drivers/power/supply/s2mf301_charger.c&#10;include/linux/power/**"></textarea><p class="hint">Project Root 기준 상대 경로. *는 한 단계, **는 모든 하위 경로입니다.</p></div><div><label for="blocked_paths">수정 제외 파일 · 경로</label><textarea id="blocked_paths" class="mono" rows="5" maxlength="1500" placeholder="**/*.key&#10;**/secrets/**"></textarea><p class="hint">숨김 파일·심볼릭 링크·빌드 폴더는 탐색에서 제외됩니다.</p></div></div>
-            <label for="change_notes">개발 대상 · 범위 설명</label><textarea id="change_notes" rows="2" maxlength="4000" placeholder="관련 기능, 수정 가능한 함수, 영향 범위"></textarea>
             <label for="code_guidelines">코딩 규칙 · 제약</label><textarea id="code_guidelines" rows="2" maxlength="4000" placeholder="기존 커널 스타일 유지, IRQ 및 동시성 검토, 관련 없는 로직 수정 금지"></textarea>
             <details id="fileManifest"><summary>저장된 설정의 수정 가능 파일 <span id="fileCount" class="count">0</span></summary><p id="scanStatus" class="hint"></p><label for="fileSearch">파일명 · 경로 검색</label><input type="search" id="fileSearch" placeholder="charger.c 또는 drivers/power"><ul id="fileList" class="file-list"></ul><button id="moreFiles" type="button" class="secondary" hidden>더 보기</button></details>
           </section>
