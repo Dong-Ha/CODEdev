@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 def build_handler(context: dict):
     class Handler (BaseHTTPRequestHandler ):
-        server_version ="AXCodeDevRequestStudio/2.0"
+        server_version ="AXCodeDevRequestStudio/2.1"
         def _headers (self ,status :int ,mime :str ="application/json; charset=utf-8",length :int =0 ):
             self .send_response (status )
             self .send_header ("Content-Type",mime )
@@ -57,8 +57,9 @@ def build_handler(context: dict):
                 return self ._json (200 ,{"ok":True ,"token":context['CSRF'] ,"sample_path":str (context['SAMPLE'] .resolve ()),
                 "last_workspace":store .get ("last_workspace",""),
                 "config_file":str (context['CONFIG_FILE'] ),
-                "version":"2.0.0","agent_intake_enabled":bool (context['AGENT_TOKEN'] ),
+                "version":"2.1.0","agent_intake_enabled":bool (context['AGENT_TOKEN'] ),
                 "code_dev_agent":{"implemented":False,"status":"not_connected"},
+                "claude_cli":context['claude_status'](),
                 "legacy_claude_enabled":context['ENABLE_LEGACY_CLAUDE'],
                 "limitations":{"max_full_file_output_kb":64,"max_edit_source_mb":8,"large_file_patch":True }})
             intake_route = route.replace("/api/agent/requests", "/api/requests", 1)
@@ -70,7 +71,8 @@ def build_handler(context: dict):
                 try:
                     if intake_route == "/api/requests":
                         return self._json(200, {"ok": True, "tasks": context['INTAKE'].list()})
-                    task = context['INTAKE'].get(intake_route.rsplit("/", 1)[1], for_agent=route.startswith("/api/agent/"))
+                    ident = intake_route.rsplit("/", 1)[1]
+                    task = context['INTAKE'].get(ident, for_agent=True) if route.startswith("/api/agent/") else context['CLI_DISPATCH'].detail(ident)
                     return self._json(200, {"ok": True, "task": task})
                 except Exception as exc:
                     return self._error(exc)
@@ -124,7 +126,7 @@ def build_handler(context: dict):
             if not self ._origin_ok ():
                 return self ._json (403 ,{"ok":False ,"error":"허용되지 않은 Origin/Host입니다."})
             route =urlparse (self .path ).path 
-            agent_api =route in {"/api/agent/handoffs", "/api/agent/requests"}
+            agent_api =route in {"/api/agent/handoffs", "/api/agent/requests", "/api/agent/requests/dispatch"}
             if agent_api :
                 if not self ._agent_authorized ():
                     return self ._json (403 ,{"ok":False ,"error":"에이전트 연동 인증이 필요합니다."})
@@ -139,6 +141,8 @@ def build_handler(context: dict):
                 body =json .loads (self .rfile .read (length ))
                 if not isinstance (body ,dict ):
                     raise context['ApiError'] ("JSON 객체를 전달하세요.")
+                if route in {"/api/requests/dispatch", "/api/agent/requests/dispatch"}:
+                    return self._json(202, {"ok": True, "task": context['CLI_DISPATCH'].start(body)})
                 if route in {"/api/requests", "/api/agent/requests"} or (agent_api and not context['ENABLE_LEGACY_CLAUDE']):
                     return self._json(202, {"ok": True, "task": context['INTAKE'].create(body, agent=agent_api)})
                 if agent_api :

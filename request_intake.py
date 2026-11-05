@@ -71,7 +71,8 @@ class RequestIntake:
     def summary(self, record, full=False):
         payload = record["payload"]
         profile = self.c["profile_for"](Path(payload["workspace"]))
-        result = {"id": record["id"], "status": "waiting_for_agent",
+        runs = record.get("cli_runs", [])
+        result = {"id": record["id"], "status": runs[-1]["status"] if runs else "waiting_for_agent",
                   "created_at": payload["created_at"], "workspace": payload["workspace"],
                   "origin": payload["origin"], **payload["request"],
                   "profile_revision": payload["environment"]["revision"],
@@ -79,6 +80,7 @@ class RequestIntake:
                   "agent_available": False}
         if full:
             result["payload"] = copy.deepcopy(payload)
+            result["cli_runs"] = copy.deepcopy(runs)
         else:
             result.pop("source_content", None)
         return result

@@ -6,10 +6,10 @@
   <link rel="stylesheet" href="/intake.css"><script src="/intake.js" defer></script>
 </head>
 <body>
-  <header><a class="brand" href="/">AX <span>Studio</span></a><span class="header-caption">CODE-DEV / REQUEST STUDIO</span><span class="badge">Agent 연결 준비 중</span></header>
+  <header><a class="brand" href="/">AX <span>Studio</span></a><span class="header-caption">CODE-DEV / REQUEST STUDIO</span><span class="badge">Claude CLI 프롬프트 연결</span></header>
   <main>
     <div class="intro"><p class="eyebrow">SW DEVELOPMENT</p><h1>개발의 조건을 정하고,<br>요청을 전달하세요.</h1><p>개발·빌드 환경과 수정 허용 파일을 요청에 담아 code-dev agent를 위한 작업을 준비합니다.</p></div>
-    <div class="notice"><strong>현재 단계: 요청 접수 및 전달 준비</strong><span>code-dev agent는 추후 구현됩니다. 요청은 이 서버에 저장되며 코드 생성·빌드·파일 수정은 실행되지 않습니다.</span></div>
+    <div class="notice"><strong>Claude Code CLI에 바로 전달</strong><span>요청과 개발 환경을 프롬프트로 전송하고 응답을 확인합니다. code-dev agent는 추후 구현되며, 이번 연결에서는 소스 읽기·수정·빌드를 실행하지 않습니다.</span></div>
     <nav aria-label="작업 화면"><button id="navEnvironment" aria-current="page">01 <span>개발 환경</span></button><button id="navRequest">02 <span>요청 작성</span></button><button id="navQueue">03 <span>접수 내역</span><span id="queueCount" class="count">0</span></button></nav>
     <div id="message" class="message" role="status" aria-live="polite" hidden></div>
     <section id="environmentView" aria-labelledby="environmentHeading">
@@ -42,19 +42,20 @@
     <section id="requestView" aria-labelledby="requestHeading" hidden>
       <div class="section-heading"><div><h2 id="requestHeading">개발 요청 작성</h2><p>문제, 기대 동작과 완료 조건을 함께 전달하세요.</p></div></div>
       <div class="two-column request-columns"><form id="requestForm" class="card">
+        <div class="notice"><strong id="cliStatus">Claude CLI 확인 중</strong><span id="cliNote"></span><button type="button" id="refreshCli" class="secondary">CLI 상태 새로고침</button></div>
         <label for="sourceKind">요청 근거</label><select id="sourceKind"><option value="freeform">자유 요청</option><option value="sdd">SDD · 상세 설계</option><option value="jira">Jira 이슈</option><option value="srs">SRS · 요구사항 명세</option><option value="verification">검증 피드백</option></select>
         <label for="sourceRef">문서 · 이슈 ID 또는 링크</label><input id="sourceRef" maxlength="300" placeholder="예: SDD-IFPMIC-014 / PMIC-123">
         <label for="sourceContent">참고 본문 · 수용 조건</label><textarea id="sourceContent" rows="6" maxlength="12000" placeholder="SDD나 Jira의 필요한 본문을 붙여넣으세요."></textarea><p class="hint">링크는 추적용입니다. 문서·Jira를 자동 조회하지 않습니다.</p>
         <label for="instruction">개발 요청 *</label><textarea id="instruction" required minlength="5" maxlength="4000" rows="7" placeholder="현재 문제, 재현 조건, 기대 동작, 유지해야 할 기존 동작을 설명하세요."></textarea>
         <button id="example" type="button" class="text-button">IFPMIC 요청 예시</button>
-        <div class="actions"><button id="submitRequest" type="submit" disabled>요청 접수 · 전달 준비</button></div><p class="hint">현재 저장된 환경과 파일 목록을 함께 보관합니다. 실제 에이전트로 전송되지는 않습니다.</p>
+        <div class="actions"><button id="submitRequest" type="submit" disabled>Claude Code로 바로 전달</button><button id="saveRequest" type="submit" class="secondary" disabled>접수만 하기</button></div><p class="hint">바로 전달 시 요청·참고 본문·환경·파일 경로가 Claude CLI에 설정된 AI 서비스로 전송됩니다. 소스 본문은 포함하지 않습니다.</p>
       </form><aside><section class="card"><h3>함께 전달할 개발 조건</h3><div id="activeProfile" class="summary"></div><button id="editEnvironment" type="button" class="secondary">환경 설정 수정</button></section><section class="card subtle"><h3>다른 에이전트의 요청</h3><p id="agentIntakeStatus">연동 상태 확인 중</p><p class="hint">인증된 요청도 같은 접수 내역에 저장됩니다. 요청 출처와 상위 실행 ID를 함께 보관합니다.</p></section></aside></div>
     </section>
     <section id="queueView" aria-labelledby="queueHeading" hidden>
       <div class="section-heading"><div><h2 id="queueHeading">접수 내역</h2><p>현재 프로젝트의 요청 · 서버 재시작 후에도 보관됩니다.</p></div><button id="refreshQueue" class="secondary">새로고침</button></div>
       <div class="queue-layout"><section class="card"><label for="originFilter">요청 출처</label><select id="originFilter"><option value="all">전체 요청</option><option value="human">직접 요청</option><option value="agent">다른 에이전트</option></select><div id="requestList" class="request-list"></div></section><section class="card" id="requestDetail" aria-live="polite"><p class="empty">요청을 선택하면 전달 내용을 확인할 수 있습니다.</p></section></div>
     </section>
-    <footer>AX Studio · 환경 설정 → 요청 접수 → code-dev agent 연결 대기 <a id="legacyLink" href="/legacy" hidden>기존 Claude 실험 화면</a></footer>
+    <footer>AX Studio · 환경 설정 → 요청 접수 → Claude CLI 전달 · 응답 확인 <a id="legacyLink" href="/legacy" hidden>기존 Claude 실험 화면</a></footer>
   </main>
 </body>
 </html>
