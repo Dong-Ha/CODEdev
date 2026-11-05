@@ -17,7 +17,7 @@
       <div class="card"><label for="workspace">Project Root</label><div class="inline"><input id="workspace" placeholder="/home/user/repos/linux" spellcheck="false"><button id="connect" type="button">경로 연결</button><button id="sample" type="button" class="secondary">샘플 연결</button></div><p class="hint">서버가 실행되는 WSL/Linux 기준 절대 경로입니다. Windows 경로라면 /mnt/c/... 형식을 사용하세요.</p><p id="connectedPath" class="hint">연결된 프로젝트 없음</p></div>
       <form id="environmentForm">
         <fieldset id="environmentFields" disabled>
-          <div class="card"><label for="wiki_link">Wiki 링크 (선택)</label><input id="wiki_link" type="url" maxlength="1500" placeholder="https://wiki.example.com/project" aria-describedby="wikiHint"><p id="wikiHint" class="hint">입력한 경우에만 개발 요청에 함께 전달합니다. 링크의 본문을 자동으로 가져오지는 않습니다.</p></div>
+          <div class="card"><label for="wiki_link">LLM Wiki 경로 (선택)</label><div class="inline"><input id="wiki_link" maxlength="1500" placeholder="/home/user/llm-wiki 또는 docs/wiki" spellcheck="false" aria-describedby="wikiHint wikiStatus"><button id="checkWiki" type="button" class="secondary">경로 검증</button></div><p id="wikiHint" class="hint">서버의 WSL/Linux에 있는 폴더 또는 파일 경로입니다. 상대 경로는 Project Root 기준이며, Windows 파일은 /mnt/c/...로 입력하세요. 입력한 경로만 요청에 전달하며 본문은 자동으로 읽지 않습니다.</p><p id="wikiStatus" class="hint" role="status" aria-live="polite">선택 입력입니다. 경로를 입력한 뒤 검증할 수 있습니다.</p></div>
           <div class="two-column"><section class="card"><h3>프로젝트 · 개발 환경</h3>
             <label for="project_name">프로젝트명 *</label><input id="project_name" required maxlength="120">
             <label for="project_type">프로젝트 유형</label><select id="project_type"><option value="linux-kernel">Linux Kernel / Driver</option><option value="generic">일반 소스 프로젝트</option></select>

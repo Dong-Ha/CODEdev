@@ -161,6 +161,9 @@ def build_handler(context: dict):
                     "configured":profile is not None ,
                     "config":profile if profile else context['default_profile'] (root ),
                     "is_sample":root ==context['SAMPLE'] .resolve ()})
+                if route == "/api/wiki/check":
+                    root = context['resolve_workspace'](body.get("workspace"))
+                    return self._json(200, {"ok": True, **context['check_wiki_path'](root, body.get("path"))})
                 if route =="/api/config/save":
                     root =context['resolve_workspace'] (body .get ("workspace"))
                     profile =context['save_profile'] (root ,body .get ("config"),body .get ("expected_revision"))
