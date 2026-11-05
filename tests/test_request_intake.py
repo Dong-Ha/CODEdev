@@ -118,7 +118,8 @@ class RequestIntakeTest(unittest.TestCase):
         task = self.create()
         self.assertNotIn("wiki_link", task["payload"]["environment"])
         self.assertNotIn("wiki_link", self.api("/api/requests/" + task["id"])[1]["task"]["cli_prompt"])
-        wiki = "https://wiki.example.com/프로젝트?pageId=123#requirements"
+        wiki = str(self.root / "LLM 위키.md")
+        Path(wiki).write_text("Wiki content is not automatically sent.")
         for value in ("  " + wiki + "  ", "   "):
             config = {key: self.profile[key] for key in ax.PROFILE_FIELDS}
             config["wiki_link"] = value
@@ -139,8 +140,39 @@ class RequestIntakeTest(unittest.TestCase):
                 self.assertNotIn("wiki_link", detail["cli_prompt"])
         self.assertEqual(ax.INTAKE.get(with_wiki)["payload"]["environment"]["wiki_link"], wiki)
 
+    def test_check_local_wiki_path(self):
+        wiki = self.root / "LLM 위키"
+        wiki.mkdir()
+        page = wiki / "index.md"
+        page.write_text("Private Wiki contents")
+        external = self.root.parent / "shared-wiki"
+        external.mkdir()
+        (self.root / "wiki-link").symlink_to(wiki, target_is_directory=True)
+        cases = [("LLM 위키", True, "directory"), (str(page), True, "file"),
+                 (str(external), True, "directory"), ("wiki-link", True, "directory"),
+                 ("missing", False, None), ("LLM 위키/index.md/child", False, None)]
+        for raw, exists, kind in cases:
+            status, data = self.api("/api/wiki/check", {"workspace": str(self.root), "path": raw})
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["exists"], exists)
+            self.assertEqual(data["kind"], kind)
+            self.assertTrue(Path(data["path"]).is_absolute())
+            self.assertNotIn("Private Wiki contents", json.dumps(data))
+        self.assertEqual(ax.profile_for(self.root), self.profile)
+        body = {"workspace": str(self.root), "path": str(wiki)}
+        self.assertEqual(self.api("/api/wiki/check", body, csrf=False)[0], 403)
+        self.assertEqual(self.api("/api/wiki/check", body, origin="http://evil.example")[0], 403)
+        for invalid in ("", None, 42, "https://wiki.example.com", "bad\x00path"):
+            self.assertEqual(self.api("/api/wiki/check", dict(body, path=invalid))[0], 400)
+        with patch.dict("os.environ", {"HOME": str(self.root)}):
+            self.assertEqual(ax.check_wiki_path(self.root, "~/LLM 위키")["path"], str(wiki))
+        with patch.object(Path, "stat", side_effect=PermissionError):
+            with self.assertRaises(ax.ApiError) as error:
+                ax.check_wiki_path(self.root, str(wiki))
+            self.assertEqual(error.exception.status, 403)
+
     def test_invalid_wiki_link_rejected(self):
-        for wiki in ("javascript:alert(1)", "https://", "https://wiki.example.com/a\nb", "wiki.example.com", 42):
+        for wiki in ("https://wiki.example.com", "file:///tmp/wiki", "C:\\wiki", "docs/wiki\nfile", 42):
             config = {key: self.profile[key] for key in ax.PROFILE_FIELDS}
             config["wiki_link"] = wiki
             status, _ = self.api("/api/config/save", {"workspace": str(self.root),

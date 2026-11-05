@@ -55,7 +55,8 @@ class ClaudeDispatchTest(unittest.TestCase):
 
     def test_dispatch_plain_prompt_and_persist_response(self):
         config = {key: self.profile[key] for key in ax.PROFILE_FIELDS}
-        config["wiki_link"] = "https://wiki.example.com/IFPMIC?pageId=123"
+        config["wiki_link"] = str(self.root / "llm-wiki.md")
+        Path(config["wiki_link"]).write_text("WIKI_BODY_NOT_SENT")
         self.profile = ax.save_profile(self.root, config, self.profile["revision"])
         self.body["expected_revision"] = self.profile["revision"]
         task = self.create(instruction="음수 입력을 검증해줘. $(touch SHOULD_NOT_RUN)")
@@ -70,6 +71,7 @@ class ClaudeDispatchTest(unittest.TestCase):
         self.assertEqual(actual["prompt"], preview)
         self.assertEqual(run["prompt"], preview)
         self.assertIn(config["wiki_link"], actual["prompt"])
+        self.assertNotIn("WIKI_BODY_NOT_SENT", actual["prompt"])
         for text in ("WSL Ubuntu 24.04", "Android 16", "Clang test version", "make all", "driver.c", "blocked.c", "SDD-014"):
             self.assertIn(text, actual["prompt"])
         self.assertNotIn("int current", actual["prompt"])

@@ -43,7 +43,21 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   fill(dom, 'development_environment', 'Windows 11 + WSL Ubuntu 24.04');
   fill(dom, 'target_environment', 'Android 16 / IFPMIC charger');
   fill(dom, 'build_command', 'make original');
-  fill(dom, 'wiki_link', 'https://wiki.example.com/IFPMIC');
+  assert.equal(document.getElementById('checkWiki').disabled, true);
+  fill(dom, 'wiki_link', 'missing-wiki-path');
+  click(dom, 'checkWiki');
+  await until(() => document.getElementById('wikiStatus').textContent.includes('존재하지 않는'));
+  await until(() => !document.getElementById('sample').disabled);
+  fill(dom, 'wiki_link', 'drivers/power/supply');
+  assert.match(document.getElementById('wikiStatus').textContent, /아직 검증하지 않은/);
+  click(dom, 'checkWiki');
+  await until(() => document.getElementById('wikiStatus').textContent.includes('폴더가 존재'));
+  await until(() => !document.getElementById('sample').disabled);
+  fill(dom, 'wiki_link', 'drivers/power/supply/ax_ifpmic_charger.c');
+  click(dom, 'checkWiki');
+  await until(() => document.getElementById('wikiStatus').textContent.includes('파일이 존재'));
+  await until(() => !document.getElementById('sample').disabled);
+  const wikiPath = document.getElementById('workspace').value + '/drivers/power/supply/ax_ifpmic_charger.c';
   fill(dom, 'editable_paths', 'drivers/power/supply/ax_ifpmic_charger.c');
   submit(dom, 'environmentForm');
   await until(() => !document.getElementById('goRequest').disabled);
@@ -59,8 +73,8 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   await until(() => !document.getElementById('sample').disabled);
   assert.match(document.getElementById('requestDetail').textContent, /전송 대기/);
   assert.match(document.getElementById('requestDetail').textContent, /make original/);
-  assert.match(document.getElementById('activeProfile').textContent, /https:\/\/wiki.example.com\/IFPMIC/);
-  assert.match(document.getElementById('requestDetail').textContent, /https:\/\/wiki.example.com\/IFPMIC/);
+  assert.ok(document.getElementById('activeProfile').textContent.includes(wikiPath));
+  assert.ok(document.getElementById('requestDetail').textContent.includes(wikiPath));
   assert.equal(document.getElementById('requestDetail').querySelector('script'), null);
   assert.match(document.getElementById('requestDetail').textContent, /전달 JSON 다운로드/);
   const count = document.getElementById('queueCount').textContent;
@@ -71,7 +85,8 @@ function submit(dom, id, send=false) { dom.window.document.getElementById(id).di
   dom.window.close();
 
   dom = await open(); document = dom.window.document;
-  assert.equal(document.getElementById('wiki_link').value, 'https://wiki.example.com/IFPMIC');
+  assert.equal(document.getElementById('wiki_link').value, wikiPath);
+  assert.match(document.getElementById('wikiStatus').textContent, /아직 검증하지 않은/);
   click(dom, 'navQueue');
   await until(() => document.querySelector('.request-item'));
   document.querySelector('.request-item').click();

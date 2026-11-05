@@ -102,7 +102,7 @@ GUI GET에는 별도 사용자 로그인/권한 분리가 없습니다. GUI에 �
 | `workspace`, `git_branch` | Project Root, 접수 때 Git 브랜치 |
 | `request` | instruction, source_kind/ref/content, source_agent, upstream_run_id, target |
 | `environment` | 당시 개발·대상 환경, 도구 버전, build_dir/command/env, ARCH/CROSS_COMPILE, 허용·제외 경로, 코딩 규칙, revision |
-| `environment.wiki_link` | 선택 입력한 프로젝트 Wiki URL. 빈 값이면 키 자체를 생략. URL만 전달하며 본문은 자동 조회하지 않음 |
+| `environment.wiki_link` | 선택 입력한 로컬 LLM Wiki 폴더/파일의 절대 경로(기존 키 이름 유지). 빈 값이면 키 자체를 생략. 본문은 자동으로 읽지 않음 |
 | `scope.editable_files` | 당시 탐색된 `{path, size}` 목록. 파일 내용은 포함하지 않음 |
 | `scope.scan` | 탐색 통계와 누락 경고. truncated 탐색은 접수 거부 |
 | `scope.read_boundary` | Project Root (향후 실행기의 제한된 참조 읽기 경계) |
@@ -160,3 +160,9 @@ CLI 미설치는 503이며 실행 기록을 만들지 않습니다. 설정 revis
 CLI에 보내는 내용은 요청/본문·환경·파일 경로입니다. 소스 내용을 자동으로 읽거나 전체 저장소를 전송하지 않습니다. stdin을 직접 사용하고 shell=False, 임시 cwd, 빈 내장 도구 목록과 MCP 도구 차단을 적용합니다. JSON 변경안 스키마를 강제하지 않으며 code-dev agent 프롬프트 대신 전달 전용 시스템 지시를 사용합니다. 원시 stderr·내부 추론은 UI에 표시하지 않습니다.
 
 같은 서버 사용자 환경에서 `claude auth status`가 정상인지 확인하세요. 실제 인증/모델 호출은 해당 머신에 설치된 CLI와 조직 설정을 따릅니다.
+
+### 로컬 LLM Wiki 경로 검증
+
+`POST /api/wiki/check`에 `{ "workspace": "/project/root", "path": "docs/wiki" }`를 보내면 `{ "ok": true, "path": "/project/root/docs/wiki", "exists": true, "kind": "directory" }`를 반환합니다. 기존 `X-AX-Token` 및 Origin/Host 검증을 적용합니다. `kind`는 `directory`, `file`, `other`이며 없는 경로는 `exists: false`, `kind: null`입니다. 접근 권한 부족은 403으로 구분합니다.
+
+Project Root 기준 상대 경로, 절대 경로, 홈 경로를 지원합니다. 프로젝트 외부의 Wiki도 지정할 수 있습니다. 심볼릭 링크는 대상의 존재 여부를 확인하며, 파일 내용이나 폴더 목록은 읽지 않습니다. 검증은 설정을 저장하거나 수정 허용 범위를 넓히지 않습니다. 경로 또는 Project Root를 편집하면 화면의 이전 검증 결과는 초기화됩니다.

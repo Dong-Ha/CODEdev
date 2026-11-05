@@ -6,7 +6,7 @@ const fields = ["project_name", "project_type", "wiki_link", "development_enviro
 const kinds = {freeform:"자유 요청", sdd:"SDD", jira:"Jira", srs:"SRS", verification:"검증 피드백"};
 const cliLabels = {waiting_for_agent:"전송 대기", cli_queued:"Claude 전송 대기", cli_running:"Claude 응답 중", cli_complete:"Claude 응답 완료", cli_failed:"Claude 호출 실패", cli_interrupted:"실행 중단 · 확인 필요"};
 const state = {token:"", workspace:"", config:null, base:"", files:[], scan:null,
-  sample:"", tasks:[], selected:"", shown:40, busy:false, retry:null, detailSequence:0, cliInstalled:false, pollTimer:null, dispatchKeys:{}};
+  sample:"", tasks:[], selected:"", shown:40, busy:false, retry:null, detailSequence:0, cliInstalled:false, pollTimer:null, dispatchKeys:{}, wikiCheckSequence:0};
 function formConfig() { return Object.fromEntries(fields.map(key => [key, $(key).value.trim()])); }
 function dirty() { return state.base !== JSON.stringify(formConfig()) || $("workspace").value.trim() !== state.workspace; }
 function notice(text, error=false) { $("message").textContent=text; $("message").classList.toggle("error", error); $("message").hidden=false; }
@@ -23,6 +23,7 @@ function ready() {
   $("profileStatus").textContent = changed ? "저장하지 않은 변경" : configured ? "환경 저장됨" : "설정 필요";
   $("unsaved").textContent = changed ? "변경 사항을 저장한 뒤 요청을 접수하세요." : configured ? "현재 환경이 저장되어 있습니다." : "설정을 저장해 주세요.";
   $("environmentFields").disabled = !state.workspace || state.busy;
+  $("checkWiki").disabled = state.busy || !state.workspace || !$("wiki_link").value.trim() || $("workspace").value.trim() !== state.workspace;
   for (const id of ["connect", "sample", "refreshQueue"]) $(id).disabled = state.busy;
   $("goRequest").disabled = state.busy || !configured || changed;
   const blocked = state.busy || !configured || changed || !state.files.length || state.scan?.truncated;
@@ -64,10 +65,26 @@ function pairs(container, entries) {
   for (const [label,value] of entries) {const dt=document.createElement("dt"), dd=document.createElement("dd"); dt.textContent=label; dd.textContent=value || "미지정"; dl.append(dt,dd);}
   container.append(dl);
 }
+function resetWikiCheck() {
+  state.wikiCheckSequence++;
+  $("wikiStatus").textContent = $("wiki_link").value.trim() ? "아직 검증하지 않은 경로입니다. 경로 검증을 눌러 주세요." : "선택 입력입니다. 경로를 입력한 뒤 검증할 수 있습니다.";
+}
+async function checkWiki() {
+  const sequence=++state.wikiCheckSequence;
+  $("wikiStatus").textContent="경로를 확인하고 있습니다…";
+  try {
+    const result=await api("/api/wiki/check", {workspace:state.workspace, path:$("wiki_link").value.trim()});
+    if (sequence !== state.wikiCheckSequence) return;
+    const status=!result.exists ? "존재하지 않는 경로입니다" : result.kind === "directory" ? "폴더가 존재합니다" : result.kind === "file" ? "파일이 존재합니다" : "경로는 존재하지만 일반 파일이나 폴더가 아닙니다";
+    $("wikiStatus").textContent=`${status}: ${result.path}`;
+  } catch(error) {
+    if (sequence === state.wikiCheckSequence) $("wikiStatus").textContent=`확인 실패: ${error.message}`;
+  }
+}
 function renderProfile() {
   const root=$("activeProfile"); root.replaceChildren(); const c=state.config || {};
   pairs(root, [["프로젝트", c.project_name], ["Project Root",state.workspace],
-    ...(c.wiki_link ? [["Wiki 링크",c.wiki_link]] : []), ["개발 환경",c.development_environment],
+    ...(c.wiki_link ? [["LLM Wiki 경로",c.wiki_link]] : []), ["개발 환경",c.development_environment],
     ["대상 환경",c.target_environment], ["빌드 명령",c.build_command],
     ["수정 허용 경로",c.editable_paths], ["제외 경로",c.blocked_paths], ["허용 파일",`${state.files.length}개`]]);
   if (state.scan?.truncated || !state.files.length) {const p=document.createElement("p"); p.className="stale"; p.textContent="수정 가능한 파일을 확인하고 탐색 제한을 해결한 뒤 요청을 접수하세요."; root.append(p);}
@@ -78,6 +95,7 @@ async function connect(path) {
   state.workspace=data.path; state.config=data.config; state.files=data.files; state.scan=data.scan;
   $("workspace").value=data.path;
   for (const key of fields) $(key).value=data.config[key] || "";
+  resetWikiCheck();
   state.base=JSON.stringify(formConfig()); state.shown=40; state.selected="";
   state.detailSequence++;
   $("requestDetail").replaceChildren();
@@ -134,7 +152,7 @@ function renderDetail(task) {
   pairs(root, [["요청 ID", task.id], ["요청 근거",kinds[task.source_kind]], ["출처", task.origin === "agent" ? task.source_agent : "직접 요청"],
     ["상위 실행 ID",task.upstream_run_id], ["참조 ID / 링크",task.source_ref], ["개발 요청",task.instruction], ["참고 본문", task.source_content],
     ["프로젝트",env.project_name], ["Project Root",payload.workspace],
-    ...(env.wiki_link ? [["Wiki 링크",env.wiki_link]] : []), ["설정 버전",env.revision],
+    ...(env.wiki_link ? [["LLM Wiki 경로",env.wiki_link]] : []), ["설정 버전",env.revision],
     ["개발 환경",env.development_environment], ["대상 환경",env.target_environment],
     ["빌드 작업 폴더",env.build_dir],
     ["빌드 명령",env.build_command], ["빌드 환경변수",env.build_env], ["수정 허용 경로",env.editable_paths], ["수정 제외 경로",env.blocked_paths],
@@ -205,6 +223,8 @@ async function initialize() {
   };
   $("connect").onclick=() => mayConnect($("workspace").value.trim()); $("sample").onclick=() => mayConnect(state.sample);
   $("workspace").addEventListener("input",ready); $("environmentForm").addEventListener("input",ready);
+  $("wiki_link").addEventListener("input",resetWikiCheck); $("workspace").addEventListener("input",resetWikiCheck);
+  $("checkWiki").onclick=()=>action(checkWiki);
   $("fileSearch").oninput=() => {state.shown=40;renderFiles();}; $("moreFiles").onclick=() => {state.shown+=40;renderFiles();};
   $("originFilter").onchange=renderQueue; $("refreshQueue").onclick=() => action(async () => {await loadQueue();if(state.selected) await openDetail(state.selected);});
   $("example").onclick=() => {$("instruction").value="IFPMIC 충전 입력 전류 설정 함수에서 음수 및 최대 허용값 초과 입력을 차단해줘. 정상 범위의 기존 동작은 유지하고 오류 반환 경로를 설명해줘.";};

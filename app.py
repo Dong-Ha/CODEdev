@@ -240,6 +240,37 @@ def configured_files(root: Path, profile: dict | None) -> list[dict]:
     return scan_workspace(root, profile)["files"]
 
 
+def local_wiki_path(root: Path, raw: object) -> Path:
+    """Resolve user-supplied local metadata without reading Wiki contents."""
+    if not isinstance(raw, str) or not raw.strip() or len(raw) > 1500:
+        raise ApiError("LLM Wiki의 로컬 폴더 또는 파일 경로를 입력하세요.")
+    value = raw.strip()
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value) or "\\" in value:
+        raise ApiError("웹 URL 대신 WSL/Linux 로컬 경로를 입력하세요. Windows 파일은 /mnt/c/... 형식으로 지정하세요.")
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ApiError("Wiki 경로에는 줄바꿈이나 제어 문자를 사용할 수 없습니다.")
+    try:
+        path = Path(value).expanduser()
+    except RuntimeError:
+        raise ApiError("Wiki 경로의 홈 디렉터리를 확인할 수 없습니다.")
+    # Keep symlinks intact: existence is checked only on explicit validation.
+    return path if path.is_absolute() else root / path
+
+
+def check_wiki_path(root: Path, raw: object) -> dict:
+    path = local_wiki_path(root, raw)
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return {"path": str(path), "exists": False, "kind": None}
+    except PermissionError:
+        raise ApiError("접근 권한이 없어 Wiki 경로의 존재 여부를 확인할 수 없습니다.", 403)
+    except OSError:
+        raise ApiError("Wiki 경로를 확인할 수 없습니다. 경로 또는 심볼릭 링크를 확인하세요.")
+    kind = "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "other"
+    return {"path": str(path), "exists": True, "kind": kind}
+
+
 def save_profile(root: Path, raw: object, expected_revision: object = None) -> dict:
     if not isinstance(raw, dict):
         raise ApiError("환경 설정 정보를 입력하세요.")
@@ -255,14 +286,7 @@ def save_profile(root: Path, raw: object, expected_revision: object = None) -> d
             raise ApiError(f"{key} 입력이 너무 깁니다.")
         config[key] = val.strip()
     if config["wiki_link"]:
-        try:
-            wiki = urlparse(config["wiki_link"])
-            valid_wiki = (wiki.scheme in {"http", "https"} and bool(wiki.hostname)
-                          and not any(c.isspace() or ord(c) < 32 for c in config["wiki_link"]))
-        except ValueError:
-            valid_wiki = False
-        if not valid_wiki:
-            raise ApiError("Wiki 링크는 http:// 또는 https://로 시작하는 URL을 입력하세요.")
+        config["wiki_link"] = str(local_wiki_path(root, config["wiki_link"]))
     if not config["project_name"] or not config["build_command"]:
         raise ApiError("프로젝트명과 빌드 명령어는 필수입니다.")
     if config["project_type"] not in PROJECT_TYPES:
