@@ -180,7 +180,8 @@ async function openIncoming() {
 }
 
 function envFromForm() {
-  const result = {};
+  const result = Object.fromEntries(["development_environment", "target_environment", "toolchain"]
+    .map(key => [key, state.config?.[key] || ""]));
   for (const [key, elementId] of Object.entries(PROFILE_FIELDS)) result[key] = $(elementId).value.trim();
   return result;
 }

@@ -25,6 +25,8 @@ SAMPLE_FILE = ROOT / "sample_workspace/drivers/power/supply/ax_ifpmic_charger.c"
 class ApiFlowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # These tests exercise the explicitly opt-in historical Claude prototype.
+        ax.ENABLE_LEGACY_CLAUDE = True
         cls.config_tempdir = tempfile.TemporaryDirectory()
         ax.CONFIG_FILE = Path(cls.config_tempdir.name) / "profiles.json"
         cls.original = SAMPLE_FILE.read_bytes()
