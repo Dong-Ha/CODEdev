@@ -1,8 +1,9 @@
 # Code Dev Wiki
 
-feature-dev의 7단계에 로컬 LLM Wiki 탐색과 코드 대조를 통합한 **단일 에이전트 지침**입니다.
+feature-dev의 7단계에 **독립 Wiki 탐색을 추가한 8단계 에이전트 지침**입니다. 요구사항 분석 다음에 위키를 탐색하고, 그 결과를 코드 탐색·설계·구현·리뷰에 전달합니다.
 
-- [code-dev-wiki.md](code-dev-wiki.md): 실행 지침과 단계별 완료 조건.
+- [code-dev-wiki.md](code-dev-wiki.md): 8단계 진행·역할 전달·승인 지침.
+- [wiki-explorer.md](wiki-explorer.md): 독립 위키 탐색 역할과 wiki_context 반환 계약.
 - 입력 계약: [CODEdev 요청 계약](../../docs/orchestration.md)의 task.payload.
 - 위키 입력: 현재 필드인 environment.wiki_link 사용 (선택).
 - 기존 [code-dev.md](../code-dev.md)는 레거시 실험 모드용으로 유지합니다.
@@ -30,9 +31,9 @@ agents/는 CODEdev의 일반 파일 폴더이며 Claude Code 자동 등록 경�
 
 ## 흐름
 
-요구사항 파악 → 위키·코드 탐색 → 불명확한 사항 해소 → 구현 설계 → 구현/변경안 → 리뷰·검증 → 결과 보고.
+요구사항 파악 → **Wiki 탐색** → 코드 탐색 → 불명확한 사항 해소 → 구현 설계 → 구현/변경안 → 리뷰·검증 → 결과 보고.
 
-위키는 2단계에서 근거 표로 정리하고 4·6단계에서 다시 대조합니다. 위키 미지정은 코드 탐색으로 진행하고, 지정한 위키 접근 실패는 결과에 남깁니다. 문서와 코드 충돌이 구현 판단에 영향을 주면 질문으로 반환합니다.
+위키는 2단계 wiki-explorer에서 wiki_context로 정리하고, 3단계 code-explorer가 코드와 대조합니다. 5단계 code-architect와 7단계 code-reviewer는 동일한 W 근거 ID를 재사용합니다. 위키 미지정은 코드 탐색으로 진행하고, 지정한 위키 접근 실패는 결과에 남깁니다. 문서와 코드 충돌이 구현 판단에 영향을 주면 질문으로 반환합니다.
 
 ## 웹 실행기에 연결할 때
 
@@ -46,7 +47,7 @@ agents/는 CODEdev의 일반 파일 폴더이며 Claude Code 자동 등록 경�
 
 | 입력/상황 | 기대 결과 |
 | --- | --- |
-| 위키 미지정 | not_configured, 코드 탐색 진행 |
+| 위키 미지정 | 위키 단계 skipped/not_configured, 빈 wiki_context를 전달하고 코드 탐색 진행 |
 | 위키 경로 없음/읽기 거절 | missing/denied 및 영향 보고 |
 | 프로젝트 밖 위키 | 별도 읽기 권한 확인, 없으면 접근하지 않음 |
 | 위키와 코드 충돌 | 근거를 양쪽에서 제시, 중요 충돌은 blocked |
@@ -59,4 +60,4 @@ agents/는 CODEdev의 일반 파일 폴더이며 Claude Code 자동 등록 경�
 
 ## 참고
 
-[Anthropic feature-dev](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/feature-dev/commands/feature-dev.md)의 7단계 개념을 참고해 AX용 지침을 새로 작성했습니다. 원본의 병렬 하위 에이전트 실행과 매 단계 사용자 확인은 그대로 복제하지 않고, 단일 세션과 기존 승인 범위에 맞췄습니다.
+[Anthropic feature-dev](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/feature-dev/commands/feature-dev.md)의 7단계 개념을 참고해 AX용 지침을 새로 작성했습니다. 원본 에이전트 파일의 복사본은 아니며 AX 입력 계약에 맞춘 지침입니다. 위키 탐색 역할을 별도 파일로 정의하고, 코드 탐색·설계·리뷰 역할은 진행 지침에 명시했습니다. 기본은 한 세션의 순차 실행이며 실제 서브에이전트 자동 등록/호출은 구현하지 않았습니다. 요구사항 확인·설계 선택·구현 승인·리뷰 처리 결정을 유지하고 이미 주어진 명시적 승인은 재사용합니다.
