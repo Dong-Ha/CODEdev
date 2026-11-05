@@ -150,11 +150,14 @@ class RequestIntake:
             if len(store["requests"]) >= self.MAX_RECORDS:
                 self.fail("요청 보관 한도에 도달했습니다. requests.json을 백업하고 정리하세요.", 429)
             ident = secrets.token_hex(12)
+            environment = copy.deepcopy(profile)
+            if not environment.get("wiki_link"):
+                environment.pop("wiki_link", None)
             payload = {"schema_version": "ax.code-dev.request.v1", "request_id": ident,
                        "recipient": "code-dev", "created_at": self.c["timestamp"](),
                        "origin": origin, "workspace": str(root),
                        "git_branch": self.c["git_branch"](root), "request": request,
-                       "environment": copy.deepcopy(profile),
+                       "environment": environment,
                        "scope": {"editable_files": scan["files"], "scan": scan["stats"],
                                  "read_boundary": str(root), "write_policy": "explicit_allowlist_only",
                                  "revalidate_before_execution": True},

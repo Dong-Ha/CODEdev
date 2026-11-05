@@ -114,6 +114,39 @@ class RequestIntakeTest(unittest.TestCase):
         for kind in sorted(ax.SOURCE_KINDS):
             self.assertEqual(self.create(source_kind=kind)["payload"]["request"]["source_kind"], kind)
 
+    def test_optional_wiki_link_saved_then_cleared(self):
+        task = self.create()
+        self.assertNotIn("wiki_link", task["payload"]["environment"])
+        self.assertNotIn("wiki_link", self.api("/api/requests/" + task["id"])[1]["task"]["cli_prompt"])
+        wiki = "https://wiki.example.com/프로젝트?pageId=123#requirements"
+        for value in ("  " + wiki + "  ", "   "):
+            config = {key: self.profile[key] for key in ax.PROFILE_FIELDS}
+            config["wiki_link"] = value
+            status, data = self.api("/api/config/save", {"workspace": str(self.root),
+                "config": config, "expected_revision": self.profile["revision"]})
+            self.assertEqual(status, 200, data)
+            self.profile = ax.profile_for(self.root)
+            self.body["expected_revision"] = self.profile["revision"]
+            self.assertEqual(self.profile["wiki_link"], value.strip())
+            task = self.create()
+            detail = self.api("/api/requests/" + task["id"])[1]["task"]
+            if value.strip():
+                self.assertEqual(task["payload"]["environment"]["wiki_link"], wiki)
+                self.assertIn(wiki, detail["cli_prompt"])
+                with_wiki = task["id"]
+            else:
+                self.assertNotIn("wiki_link", task["payload"]["environment"])
+                self.assertNotIn("wiki_link", detail["cli_prompt"])
+        self.assertEqual(ax.INTAKE.get(with_wiki)["payload"]["environment"]["wiki_link"], wiki)
+
+    def test_invalid_wiki_link_rejected(self):
+        for wiki in ("javascript:alert(1)", "https://", "https://wiki.example.com/a\nb", "wiki.example.com", 42):
+            config = {key: self.profile[key] for key in ax.PROFILE_FIELDS}
+            config["wiki_link"] = wiki
+            status, _ = self.api("/api/config/save", {"workspace": str(self.root),
+                "config": config, "expected_revision": self.profile["revision"]})
+            self.assertEqual(status, 400, wiki)
+
     def test_agent_intake_provenance_and_authentication(self):
         body = dict(self.body, source_agent="SW Design", upstream_run_id="run-14")
         body.pop("expected_revision")
