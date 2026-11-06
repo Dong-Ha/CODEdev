@@ -89,6 +89,8 @@ ZIP은 이 폴더의 선언된 10개 파일만 포함합니다. 경로·타임�
 
 ## 출처와 검증 범위
 
-Anthropic feature-dev 고정 커밋의 전문 에이전트 지침을 한국어로 번역하고 도구·이름·AX 전달 계약을 조정했습니다. 에이전트 식별자와 도구·모델·데이터 키는 실행 호환성을 위해 유지하며, LICENSE는 원문을 보존합니다. 자세한 변경과 원본 링크는 [NOTICE.md](NOTICE.md), 라이선스는 [LICENSE](LICENSE)를 참조하세요.
+Anthropic feature-dev 고정 커밋의 전문 에이전트 지침의 문장·항목·조건과 지시 강도를 최대한 충실하게 한국어로 옮기고 도구·이름·AX 전달 계약을 조정했습니다. 에이전트 식별자와 도구·모델·데이터 키는 실행 호환성을 위해 유지하며, LICENSE는 원문을 보존합니다. 자세한 변경과 원본 링크는 [NOTICE.md](NOTICE.md), 라이선스는 [LICENSE](LICENSE)를 참조하세요.
 
 설치 충돌·심볼릭 링크·경로 공백·재설치·ZIP 내용과 재현성을 자동 검사합니다. 정적 구조/설치 검사는 실제 모델 위임·품질·토큰 사용 검증을 대신하지 않습니다.
+
+번역 대조 기준은 [한국어 번역 전 CODEdev 버전](https://github.com/Dong-Ha/CODEdev/tree/c595f9546b15633e0e065ddfbf2bd50b1d631396/agents/code-dev-standalone/.claude/agents)입니다. 원문 본문과 AX 조정 사항을 각각 보존했으며, 번역을 이유로 새로운 실행 정책을 추가하지 않았습니다.
