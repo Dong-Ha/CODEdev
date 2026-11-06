@@ -2,7 +2,9 @@
 
 ## 책임 경계
 
-CODEdev는 **환경 구성 → 요청 정규화 → 환경/수정 허용 파일 스냅샷 저장 → 전달 데이터 조회**를 담당합니다. code-dev agent는 아직 구현되지 않았습니다. 접수 API는 실행하지 않고 `waiting_for_agent`로 저장합니다. 별도의 명시적 dispatch API는 Claude Code CLI에 프롬프트를 보내고 응답을 보관합니다. 빌드 실행, 소스 편집 및 미래 code-dev agent의 인수/결과 API는 구현하지 않습니다. 조회/다운로드만으로 실행하지 않습니다.
+수동 Claude Code 세션용 [독립 에이전트 패키지](../agents/code-dev-standalone/README.md)가 추가되었습니다. 동일한 `task.payload`를 받아 요구사항 → Wiki → 코드 탐색 순서로 진행합니다. 아래의 웹/API 실행기 계약과 상태는 그대로이며, 패키지 설치만으로 API 인수·결과 처리나 자동 실행이 연결되지는 않습니다.
+
+CODEdev는 **환경 구성 → 요청 정규화 → 환경/수정 허용 파일 스냅샷 저장 → 전달 데이터 조회**를 담당합니다. 웹 실행기와 개발 에이전트의 자동 연동은 아직 구현되지 않았습니다. 접수 API는 실행하지 않고 `waiting_for_agent`로 저장합니다. 별도의 명시적 dispatch API는 Claude Code CLI에 프롬프트를 보내고 응답을 보관합니다. 빌드 실행, 소스 편집 및 미래 code-dev agent의 인수/결과 API는 구현하지 않습니다. 조회/다운로드만으로 실행하지 않습니다.
 
 `agents/code-dev.md`는 기존 Claude 실험 모드용입니다. 새 에이전트를 해당 프롬프트로 이미 구현했다고 해석하지 마세요.
 
