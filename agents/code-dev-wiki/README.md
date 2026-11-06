@@ -1,5 +1,7 @@
 # Code Dev Wiki
 
+실제로 등록·호출 가능한 플러그인 없는 배포본은 **[code-dev-standalone](../code-dev-standalone/README.md)** 및 [ZIP](../../downloads/code-dev-standalone.zip)을 사용하세요. 아래 파일들은 기존 역할·입력 계약을 설명하는 지침으로 보존합니다. 새 배포본도 동일한 독립 Wiki 단계와 wiki_context 계약을 따릅니다.
+
 feature-dev의 7단계에 **독립 Wiki 탐색을 추가한 8단계 에이전트 지침**입니다. 요구사항 분석 다음에 위키를 탐색하고, 그 결과를 코드 탐색·설계·구현·리뷰에 전달합니다.
 
 - [code-dev-wiki.md](code-dev-wiki.md): 8단계 진행·역할 전달·승인 지침.
