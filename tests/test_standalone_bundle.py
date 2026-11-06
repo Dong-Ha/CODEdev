@@ -95,10 +95,10 @@ class StandaloneBundleTests(unittest.TestCase):
             text = (agents / f"{name}.md").read_text()
             self.assertIn(f"name: {name}\n", text)
             self.assertIn("tools: Read, Grep, Glob\n", text)
-        phases = re.findall(r"^## (\d+)\. ([^—]+)", main, re.M)
+        phases = re.findall(r"^## (\d+)\. ([^\n]+)", main, re.M)
         self.assertEqual([n for n, _ in phases], list("12345678"))
-        self.assertIn("Wiki Exploration", phases[1][1])
-        self.assertIn("Codebase Exploration", phases[2][1])
+        self.assertIn("독립 위키 탐색", phases[1][1])
+        self.assertIn("코드와 문서 탐색", phases[2][1])
         for field in ("environment.wiki_link", "wiki_context", "not_configured",
                       "scope.editable_files", "task.payload", "W ID"):
             self.assertIn(field, main)

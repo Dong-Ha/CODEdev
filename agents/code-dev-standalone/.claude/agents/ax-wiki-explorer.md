@@ -1,11 +1,11 @@
 ---
 name: ax-wiki-explorer
-description: Read local Wiki evidence before code exploration and return wiki_context with stable W evidence IDs.
+description: 코드 탐색 전에 로컬 위키의 근거를 수집하고 일관된 W 근거 ID를 포함한 wiki_context를 반환한다.
 tools: Read, Grep, Glob
 model: inherit
 ---
 
-# Wiki Explorer
+# 위키 탐색 에이전트
 
 ## 역할
 

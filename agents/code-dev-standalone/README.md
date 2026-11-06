@@ -1,4 +1,4 @@
-# CODEdev standalone agent bundle
+# CODEdev 독립형 에이전트 패키지
 
 플러그인 없이 사용하는 **메인 에이전트 1개 + 전문 에이전트 4개**입니다.
 Claude Code CLI와 인증, Python 3.10 이상이 필요합니다. Python은 설치·ZIP 생성에만 사용하며 추가 패키지는 필요 없습니다.
@@ -7,14 +7,14 @@ Claude Code CLI와 인증, Python 3.10 이상이 필요합니다. Python은 설�
 
 | 단계 | 작업 | 실행 주체 |
 | --- | --- | --- |
-| 1 | Discovery: 요구사항 파악 | ax-code-dev |
-| 2 | Wiki Exploration: 독립 Wiki 탐색 | ax-wiki-explorer 1개, 결과를 메인이 확인 |
-| 3 | Codebase Exploration: Wiki와 코드 대조 | ax-code-explorer 2~3개 |
-| 4 | Clarification: 미결 사항 해소 | ax-code-dev |
-| 5 | Architecture Design: 대안 비교·선택 | ax-code-architect 2~3개, 선택은 메인 |
-| 6 | Implementation: 구현·실행 검증 | ax-code-dev |
-| 7 | Quality Review: 검토·수정 확인 | ax-code-reviewer 3개, 수정은 메인 |
-| 8 | Summary: 결과와 인계 | ax-code-dev |
+| 1 | 요구사항 파악 | ax-code-dev |
+| 2 | 독립 Wiki 탐색 | ax-wiki-explorer 1개, 결과를 메인이 확인 |
+| 3 | Wiki와 코드 대조 | ax-code-explorer 2~3개 |
+| 4 | 미결 사항 해소 | ax-code-dev |
+| 5 | 대안 비교·선택 | ax-code-architect 2~3개, 선택은 메인 |
+| 6 | 구현·실행 검증 | ax-code-dev |
+| 7 | 검토·수정 확인 | ax-code-reviewer 3개, 수정은 메인 |
+| 8 | 결과와 인계 | ax-code-dev |
 
 원본 1단계와 2단계 사이에 Wiki 탐색을 삽입하고 후속 단계를 재번호화했습니다.
 Wiki 결과가 준비되기 전에 코드 탐색을 시작하지 않습니다. 같은 단계의 독립적인 전문 에이전트 호출은 병렬 실행합니다.
@@ -89,6 +89,6 @@ ZIP은 이 폴더의 선언된 10개 파일만 포함합니다. 경로·타임�
 
 ## 출처와 검증 범위
 
-Anthropic feature-dev 고정 커밋의 전문 에이전트 본문을 포함하고 도구·이름·AX 전달 계약을 조정했습니다. 자세한 변경과 원본 링크는 [NOTICE.md](NOTICE.md), 라이선스는 [LICENSE](LICENSE)를 참조하세요.
+Anthropic feature-dev 고정 커밋의 전문 에이전트 지침을 한국어로 번역하고 도구·이름·AX 전달 계약을 조정했습니다. 에이전트 식별자와 도구·모델·데이터 키는 실행 호환성을 위해 유지하며, LICENSE는 원문을 보존합니다. 자세한 변경과 원본 링크는 [NOTICE.md](NOTICE.md), 라이선스는 [LICENSE](LICENSE)를 참조하세요.
 
 설치 충돌·심볼릭 링크·경로 공백·재설치·ZIP 내용과 재현성을 자동 검사합니다. 정적 구조/설치 검사는 실제 모델 위임·품질·토큰 사용 검증을 대신하지 않습니다.
